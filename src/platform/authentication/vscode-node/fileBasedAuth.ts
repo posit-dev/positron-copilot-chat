@@ -8,6 +8,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { AuthenticationSession } from 'vscode';
+import { GITHUB_SCOPE_USER_EMAIL } from '../common/authentication';
 
 /**
  * Try to get an authentication session from the GitHub Copilot apps.json file.
