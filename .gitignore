@@ -16,6 +16,11 @@ __pycache__/
 .ruff_cache/
 *.egg-info/
 
+# --- Start Positron ---
+# ctags
+tags
+# --- End Positron ---
+
 # Secret token files
 /.env
 *.token
