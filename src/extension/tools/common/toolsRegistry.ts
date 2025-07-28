@@ -63,7 +63,10 @@ export interface ICopilotToolCtor {
 }
 
 export const ToolRegistry = new class {
-	private _tools: ICopilotToolCtor[] = [];
+	// --- Start Positron ---
+	// Don't make the tools private as it breaks compilation inside Positron.
+	_tools: ICopilotToolCtor[] = [];
+	// --- End Positron ---
 
 	public registerTool(tool: ICopilotToolCtor) {
 		this._tools.push(tool);
