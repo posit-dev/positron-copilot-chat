@@ -28,6 +28,7 @@ import { ChatVariablesCollection } from '../../../prompt/common/chatVariablesCol
 import { GlobalContextMessageMetadata, RenderedUserMessageMetadata, Turn } from '../../../prompt/common/conversation';
 import { InternalToolReference } from '../../../prompt/common/intents';
 import { IPromptVariablesService } from '../../../prompt/node/promptVariablesService';
+import { PositronAssistant } from '../../../prompts/node/base/positronAssistant';
 import { ToolName } from '../../../tools/common/toolNames';
 import { CopilotIdentityRules } from '../base/copilotIdentity';
 import { IPromptEndpoint, renderPromptElement } from '../base/promptRenderer';
@@ -95,6 +96,7 @@ export class AgentPrompt extends PromptElement<AgentPromptProps> {
 				<CopilotIdentityRules />
 				<SafetyRules />
 			</SystemMessage>
+			<PositronAssistant promptContext={this.props.promptContext} />
 			{instructions}
 			<UserMessage>
 				<CustomInstructions languageId={undefined} chatVariables={this.props.promptContext.chatVariables} />
