@@ -39,6 +39,9 @@ const baseNodeBuildOptions = {
 		'zeromq',
 		'electron', // this is for simulation workbench,
 		'sqlite3',
+		// --- Start Positron ---
+		'@vscode/prompt-tsx',
+		// --- End Positron ---
 		...(isDev ? [] : ['dotenv', 'source-map-support'])
 	],
 	platform: 'node',
