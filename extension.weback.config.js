@@ -16,5 +16,9 @@ module.exports = withDefaults({
 	},
 	node: {
 		__dirname: false
+	},
+	externals: {
+		// eslint-disable-next-line @typescript-eslint/naming-convention
+		'@vscode/prompt-tsx': 'commonjs @vscode/prompt-tsx'
 	}
 });
