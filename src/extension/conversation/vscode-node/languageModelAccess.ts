@@ -150,6 +150,10 @@ export class LanguageModelAccess implements IExtensionContribution {
 						cost: endpoint.multiplier !== undefined && endpoint.multiplier !== 0 ? `${endpoint.multiplier}x` : endpoint.multiplier === 0 ? localize('languageModel.costIncluded', 'Included') : undefined,
 						category: modelCategory,
 						family: endpoint.family,
+						// --- Start Positron ---
+						// @ts-ignore
+						providerName: 'Github Copilot',
+						// --- End Positron ---
 						version: endpoint.version,
 						maxInputTokens: endpoint.modelMaxPromptTokens - baseCount - BaseTokensPerCompletion,
 						maxOutputTokens: endpoint.maxOutputTokens,
