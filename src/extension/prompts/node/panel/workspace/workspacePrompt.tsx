@@ -19,6 +19,9 @@ import { HistoryWithInstructions } from '../conversationHistory';
 import { CustomInstructions } from '../customInstructions';
 import { EditorIntegrationRules } from '../editorIntegrationRules';
 import { WorkspaceContext } from './workspaceContext';
+// --- Start Positron ---
+import { PositronAssistant } from '../../base/positronAssistant.js';
+// --- End Positron ---
 
 export interface WorkspacePromptProps extends BasePromptElementProps {
 	promptContext: IBuildPromptContext;
@@ -37,6 +40,7 @@ export class WorkspacePrompt extends PromptElement<WorkspacePromptProps> {
 				<CopilotIdentityRules />
 				<SafetyRules />
 			</SystemMessage>
+			<PositronAssistant promptContext={this.props.promptContext} />
 			<HistoryWithInstructions flexGrow={2} historyPriority={400} history={history} passPriority>
 				<InstructionMessage priority={1000}>
 					<EditorIntegrationRules />
