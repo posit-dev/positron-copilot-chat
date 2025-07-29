@@ -3686,6 +3686,7 @@
 		"singleQuote": true
 	},
 	"scripts": {
+		"vscode:prepublish": "npm run compile",
 		"postinstall": "tsx ./script/postinstall.ts",
 		"prepare": "husky",
 		"vscode-dts:dev": "node node_modules/@vscode/dts/index.js dev && mv vscode.proposed.*.ts src/extension",
