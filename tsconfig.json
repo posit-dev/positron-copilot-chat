@@ -33,6 +33,9 @@
 		"src/extension/test/node/fixtures/**/*",
 		"src/extension/prompts/node/test/fixtures/**/*",
 		"src/extension/typescriptContext/serverPlugin/fixtures/**",
-		"test/aml/out"
+		"test/aml/out",
+		"**/*.sh",
+		"**/*.ps1",
+		"**/script/**"
 	]
 }
