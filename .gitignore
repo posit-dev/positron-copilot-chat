@@ -19,6 +19,9 @@ __pycache__/
 # --- Start Positron ---
 # ctags
 tags
+
+# default output directory
+out/
 # --- End Positron ---
 
 # Secret token files
