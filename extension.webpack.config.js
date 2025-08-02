@@ -7,58 +7,117 @@
 
 'use strict';
 
-const withDefaults = require('../shared.webpack.config');
-
+const esbuild = require('esbuild');
 const path = require('path');
-const CopyWebpackPlugin = require('copy-webpack-plugin');
+const fs = require('fs');
 
-const config = withDefaults({
-	context: __dirname,
-	mode: 'development', // Disable minification
-	entry: {
-		extension: './src/extension/extension/vscode-node/extension.ts',
-	},
-	resolve: {
-		alias: {
-			// Alias the common crypto file to use Node.js crypto instead
-			'../../../util/common/crypto': path.resolve(__dirname, 'src/util/common/crypto-redirect.ts')
-		}
-	},
-	node: {
-		__dirname: false
-	},
-	externals: {
-		// eslint-disable-next-line @typescript-eslint/naming-convention
-		'@vscode/prompt-tsx': 'commonjs @vscode/prompt-tsx'
-	},
-	optimization: {
-		minimize: false // Explicitly disable minification
-	}
-});
+// Custom webpack plugin to use esbuild for the vscode-node target
+class ESBuildPlugin {
+	apply(compiler) {
+		compiler.hooks.run.tapAsync('ESBuildPlugin', async (compilation, callback) => {
+			await this.build();
+			callback();
+		});
 
-// Add our script file loader to the existing rules
-config.module.rules.push({
-	test: /\.(ps1|sh)$/,
-	type: 'asset/source'
-});
-
-// Replace the CopyWebpackPlugin with our custom one that excludes script files
-config.plugins = config.plugins.map(plugin => {
-	if (plugin.constructor.name === 'CopyWebpackPlugin') {
-		return new CopyWebpackPlugin({
-			patterns: [
-				{ 
-					from: 'src', 
-					to: '.', 
-					globOptions: { 
-						ignore: ['**/test/**', '**/*.ts', '**/*.tsx', '**/*.sh', '**/*.ps1', '**/script/**'] 
-					}, 
-					noErrorOnMissing: true 
-				}
-			]
+		compiler.hooks.watchRun.tapAsync('ESBuildPlugin', async (compilation, callback) => {
+			await this.build();
+			callback();
 		});
 	}
-	return plugin;
-});
+
+	async build() {
+		const isDev = process.env.NODE_ENV === 'development';
+
+		// Base esbuild options matching the .esbuild.ts configuration for vscode-node target
+		/** @type {import('esbuild').BuildOptions} */
+		const buildOptions = {
+			bundle: true,
+			logLevel: 'info',
+			minify: !isDev,
+			outdir: path.resolve(__dirname, './dist'),
+			sourcemap: isDev ? 'linked' : false,
+			sourcesContent: false,
+			treeShaking: true,
+			external: [
+				// Build-time files that shouldn't be bundled
+				'./package.json',
+				'./.vscode-test.mjs',
+
+				// Test/dev dependencies that shouldn't be bundled
+				'playwright',
+
+				// Native modules that are provided by the runtime environment
+				'keytar',
+				'zeromq',
+				'electron',
+				'sqlite3',
+
+				// Optional dependencies for monitoring/telemetry that may not be available
+				'@azure/functions-core',
+				'applicationinsights-native-metrics',
+				'@opentelemetry/instrumentation',
+				'@azure/opentelemetry-instrumentation-azure-sdk',
+
+				// VS Code provided APIs
+				'vscode',
+				'@vscode/prompt-tsx',
+
+				// Development mode dependencies
+				...(isDev ? [] : ['dotenv', 'source-map-support'])
+			],
+			platform: 'node',
+			format: 'cjs', // Force CommonJS output format
+			mainFields: ["module", "main"],
+			define: {
+				'process.env.APPLICATIONINSIGHTS_CONFIGURATION_CONTENT': '"{}"'
+			},
+			entryPoints: [
+				{ in: path.resolve(__dirname, './src/extension/extension/vscode-node/extension.ts'), out: 'extension' },
+			],
+			loader: { '.ps1': 'text' },
+			absWorkingDir: __dirname
+		};
+
+		try {
+			await esbuild.build(buildOptions);
+			console.log('ESBuild completed successfully');
+		} catch (error) {
+			console.error('ESBuild failed:', error);
+			throw error;
+		}
+	}
+}
+
+// Create a minimal webpack config that just uses our esbuild plugin
+const config = {
+	mode: 'development',
+	// Use a dummy entry since ESBuild handles the real entry point
+	entry: './package.json',
+	output: {
+		path: path.resolve(__dirname, 'dist'),
+		filename: 'dummy.js', // Use a different filename to avoid conflicts
+		libraryTarget: 'commonjs2'
+	},
+	plugins: [
+		new ESBuildPlugin(),
+		// Clean up the dummy file after ESBuild runs
+		{
+			apply(compiler) {
+				compiler.hooks.afterEmit.tap('CleanupDummyFile', () => {
+					const dummyFile = path.resolve(__dirname, 'dist', 'dummy.js');
+					if (fs.existsSync(dummyFile)) {
+						fs.unlinkSync(dummyFile);
+					}
+				});
+			}
+		}
+	],
+	resolve: {
+		extensions: ['.ts', '.js']
+	},
+	externals: {
+		vscode: 'commonjs vscode'
+	}
+};
 
 module.exports = config;
