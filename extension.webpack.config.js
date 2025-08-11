@@ -61,9 +61,6 @@ class ESBuildPlugin {
 				// VS Code provided APIs
 				'vscode',
 				'@vscode/prompt-tsx',
-
-				// Development mode dependencies
-				...(isDev ? [] : ['dotenv', 'source-map-support'])
 			],
 			platform: 'node',
 			format: 'cjs', // Force CommonJS output format
@@ -73,6 +70,11 @@ class ESBuildPlugin {
 			},
 			entryPoints: [
 				{ in: path.resolve(__dirname, './src/extension/extension/vscode-node/extension.ts'), out: 'extension' },
+				{ in: path.resolve(__dirname, './src/platform/parser/node/parserWorker.ts'), out: 'worker2' },
+				{ in: path.resolve(__dirname, './src/platform/tokenizer/node/tikTokenizerWorker.ts'), out: 'tikTokenizerWorker' },
+				{ in: path.resolve(__dirname, './src/platform/diff/node/diffWorkerMain.ts'), out: 'diffWorker' },
+				{ in: path.resolve(__dirname, './src/platform/tfidf/node/tfidfWorker.ts'), out: 'tfidfWorker' },
+				{ in: path.resolve(__dirname, './src/extension/onboardDebug/node/copilotDebugWorker/index.ts'), out: 'copilotDebugCommand' },
 			],
 			loader: { '.ps1': 'text' },
 			absWorkingDir: __dirname
