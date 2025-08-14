@@ -28,7 +28,7 @@ import { ChatVariablesCollection } from '../../../prompt/common/chatVariablesCol
 import { GlobalContextMessageMetadata, RenderedUserMessageMetadata, Turn } from '../../../prompt/common/conversation';
 import { InternalToolReference } from '../../../prompt/common/intents';
 import { IPromptVariablesService } from '../../../prompt/node/promptVariablesService';
-import { PositronAssistant } from '../../../prompts/node/base/positronAssistant';
+import { PositronAssistant } from '../../../prompts/node/base/positronAssistant.jsx';
 import { ToolName } from '../../../tools/common/toolNames';
 import { CopilotIdentityRules } from '../base/copilotIdentity';
 import { IPromptEndpoint, renderPromptElement } from '../base/promptRenderer';

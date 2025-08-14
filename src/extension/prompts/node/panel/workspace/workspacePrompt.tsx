@@ -20,7 +20,7 @@ import { CustomInstructions } from '../customInstructions';
 import { EditorIntegrationRules } from '../editorIntegrationRules';
 import { WorkspaceContext } from './workspaceContext';
 // --- Start Positron ---
-import { PositronAssistant } from '../../base/positronAssistant.js';
+import { PositronAssistant } from '../../base/positronAssistant.jsx';
 // --- End Positron ---
 
 export interface WorkspacePromptProps extends BasePromptElementProps {

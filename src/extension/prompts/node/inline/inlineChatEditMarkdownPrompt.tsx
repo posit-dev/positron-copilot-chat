@@ -22,7 +22,7 @@ import { MarkdownBlock } from './inlineChatGenerateMarkdownPrompt';
 import { SummarizedDocumentSplit } from './promptingSummarizedDocument';
 
 // --- Start Positron ---
-import { PositronAssistant } from '../base/positronAssistant.js';
+import { PositronAssistant } from '../base/positronAssistant.jsx';
 // --- End Positron ---
 
 export interface InlineChatEditMarkdownPromptProps extends GenericInlinePromptProps {

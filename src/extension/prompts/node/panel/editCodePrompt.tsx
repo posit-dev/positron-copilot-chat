@@ -44,7 +44,7 @@ import { CodeBlock, ExampleCodeBlock } from './safeElements';
 import { ChatToolCalls } from './toolCalling';
 
 // --- Start Positron ---
-import { PositronAssistant } from '../base/positronAssistant.js';
+import { PositronAssistant } from '../base/positronAssistant.jsx';
 // --- End Positron ---
 
 export interface EditCodePromptProps extends GenericBasePromptElementProps {

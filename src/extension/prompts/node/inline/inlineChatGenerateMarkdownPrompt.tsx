@@ -25,7 +25,7 @@ import { SummarizedDocumentSplit } from './promptingSummarizedDocument';
 import { TemporalContext } from './temporalContext';
 
 // --- Start Positron ---
-import { PositronAssistant } from '../base/positronAssistant.js';
+import { PositronAssistant } from '../base/positronAssistant.jsx';
 // --- End Positron ---
 
 export interface InlineChatGenerateMarkdownPromptProps extends GenericInlinePromptProps {
