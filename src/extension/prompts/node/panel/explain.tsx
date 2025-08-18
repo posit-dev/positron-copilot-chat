@@ -23,6 +23,9 @@ import { EditorIntegrationRules } from './editorIntegrationRules';
 import { ProjectLabels } from './projectLabels';
 import { SymbolAtCursor } from './symbolAtCursor';
 import { SymbolDefinitions } from './symbolDefinitions';
+// --- Start Positron ---
+import { PositronAssistant } from '../base/positronAssistant.js';
+// --- End Positron ---
 
 export interface ExplainPromptProps extends BasePromptElementProps {
 	promptContext: IBuildPromptContext;
@@ -69,6 +72,7 @@ export class ExplainPrompt extends PromptElement<ExplainPromptProps, ExplainProm
 					<CopilotIdentityRules />
 					<LegacySafetyRules />
 				</SystemMessage>
+				<PositronAssistant promptContext={this.props.promptContext} />
 				<HistoryWithInstructions inline={this.props.isInlineChat} historyPriority={600} passPriority history={history}>
 					<InstructionMessage priority={1000}>
 						<EditorIntegrationRules />

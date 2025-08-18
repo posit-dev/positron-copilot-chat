@@ -25,6 +25,10 @@ import { NotebookFormat, NotebookReminderInstructions } from './notebookEditCode
 import { ProjectLabels } from './projectLabels';
 import { ChatToolCalls } from './toolCalling';
 
+// --- Start Positron ---
+import { PositronAssistant } from '../base/positronAssistant.jsx';
+// --- End Positron ---
+
 export class EditCodePrompt2 extends PromptElement<AgentPromptProps> {
 	constructor(
 		props: AgentPromptProps,
@@ -114,6 +118,7 @@ export class EditCodePrompt2 extends PromptElement<AgentPromptProps> {
 					<CopilotIdentityRules />
 					<SafetyRules />
 				</SystemMessage>
+				<PositronAssistant promptContext={this.props.promptContext} />
 				{instructionsAfterHistory ? undefined : instructions}
 				<ConversationHistoryWithTools flexGrow={1} priority={700} promptContext={this.props.promptContext} />
 				{instructionsAfterHistory ? instructions : undefined}

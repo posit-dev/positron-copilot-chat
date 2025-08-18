@@ -11,7 +11,7 @@ import { GenericBasePromptElementProps } from '../../../context/node/resolvers/g
 
 export class PositronAssistant extends PromptElement<GenericBasePromptElementProps, any> {
 	private contentElement: PromptElement;
-	
+
 	constructor(props: GenericBasePromptElementProps) {
 		super(props);
 		const api = vscode.extensions.getExtension('positron.positron-assistant')?.exports;
