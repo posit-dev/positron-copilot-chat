@@ -193,6 +193,13 @@ function setupMSFTExperimentationService(builder: IInstantiationServiceBuilder, 
 
 function setupTelemetry(builder: IInstantiationServiceBuilder, extensionContext: ExtensionContext, internalAIKey: string, internalLargeEventAIKey: string, externalAIKey: string) {
 
+	// --- Start Positron ---
+	// Always disable telemetry in Positron, regardless of mode.
+	if (builder && extensionContext) {
+		builder.define(ITelemetryService, new NullTelemetryService());
+	}
+	// --- End Positron ---
+
 	if (ExtensionMode.Production === extensionContext.extensionMode) {
 		builder.define(ITelemetryService, new SyncDescriptor(TelemetryService, [
 			extensionContext.extension.packageJSON.name,
