@@ -1770,57 +1770,6 @@
 				"when": "!github.copilot.interactiveSession.disabled"
 			}
 		],
-		"viewsWelcome": [
-			{
-				"view": "debug",
-				"when": "github.copilot-chat.activated",
-				"contents": "%github.copilot.viewsWelcome.debug%"
-			}
-		],
-		"chatViewsWelcome": [
-			{
-				"icon": "$(copilot-large)",
-				"title": "Ask Copilot",
-				"content": "%github.copilot.viewsWelcome.signIn%",
-				"when": "!github.copilot-chat.activated && !github.copilot.offline && !github.copilot.interactiveSession.individual.expired && !github.copilot.interactiveSession.enterprise.disabled && !github.copilot.interactiveSession.contactSupport && !github.copilot.interactiveSession.chatDisabled && !github.copilot.interactiveSession.switchToReleaseChannel"
-			},
-			{
-				"icon": "$(copilot-large)",
-				"title": "Ask Copilot",
-				"content": "%github.copilot.viewsWelcome.individual.expired%",
-				"when": "github.copilot.interactiveSession.individual.expired"
-			},
-			{
-				"icon": "$(copilot-large)",
-				"title": "Ask Copilot",
-				"content": "%github.copilot.viewsWelcome.enterprise%",
-				"when": "github.copilot.interactiveSession.enterprise.disabled"
-			},
-			{
-				"icon": "$(copilot-large)",
-				"title": "Ask Copilot",
-				"content": "%github.copilot.viewsWelcome.offline%",
-				"when": "github.copilot.offline"
-			},
-			{
-				"icon": "$(copilot-large)",
-				"title": "Ask Copilot",
-				"content": "%github.copilot.viewsWelcome.contactSupport%",
-				"when": "github.copilot.interactiveSession.contactSupport"
-			},
-			{
-				"icon": "$(copilot-large)",
-				"title": "Ask Copilot",
-				"content": "%github.copilot.viewsWelcome.chatDisabled%",
-				"when": "github.copilot.interactiveSession.chatDisabled"
-			},
-			{
-				"icon": "$(copilot-large)",
-				"title": "Ask Copilot",
-				"content": "%github.copilot.viewsWelcome.switchToReleaseChannel%",
-				"when": "github.copilot.interactiveSession.switchToReleaseChannel"
-			}
-		],
 		"commands": [
 			{
 				"command": "github.copilot.chat.explain",
