@@ -9,13 +9,19 @@ import * as vscode from 'vscode';
 import { CancellationToken, Progress } from 'vscode';
 import { GenericBasePromptElementProps } from '../../../context/node/resolvers/genericPanelIntentInvocation';
 
+/**
+ * The Positron Assistant component; adds context from Positron as a prompt
+ * element for embedding in Copilot Chat's prompt-tsx prompts
+ */
 export class PositronAssistant extends PromptElement<GenericBasePromptElementProps, any> {
 	private contentElement: PromptElement;
 
 	constructor(props: GenericBasePromptElementProps) {
 		super(props);
+		// Get the Positron API
 		const api = vscode.extensions.getExtension('positron.positron-assistant')?.exports;
-		console.log('*** Generating Positron Assistant tag');
+
+		// Generate the content element
 		this.contentElement = api.generateAssistantPrompt(props.promptContext.request);
 	}
 

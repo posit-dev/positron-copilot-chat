@@ -79,7 +79,31 @@ export class ToolsService extends BaseToolsService {
 	getEnabledTools(request: vscode.ChatRequest, filter?: (tool: vscode.LanguageModelToolInformation) => boolean | undefined): vscode.LanguageModelToolInformation[] {
 		const toolMap = new Map(this.tools.map(t => [t.name, t]));
 
+		// --- Start Positron ---
+		// Compute the set of tools considered to be enabled by Positron. This
+		// filters out tools that are not relevant to the current Positron
+		// context; for example, many tools only make sense when a session
+		// context is attached.
+		let enabledTools = this.tools.map(tool => tool.name);
+		const api = vscode.extensions.getExtension('positron.positron-assistant')?.exports;
+		if (api) {
+			// Get the enabled tools from the Positron API
+			const positronEnabledTools = api.getEnabledTools(request, this.tools);
+			// Compute the set of tools that were disabled
+			const positronDisabledTools = this.tools.filter(tool => !positronEnabledTools.includes(tool.name)).map(tool => tool.name);
+			this.logService.logger.debug(`Disabling Positron tools: ${positronDisabledTools.join(', ')}`);
+			enabledTools = positronEnabledTools;
+		}
+		// --- End Positron ---
+
 		return this.tools.filter(tool => {
+			// --- Start Positron ---
+			// -1. Check to see whether Positron considers the tool to be enabled.
+			if (!enabledTools.includes(tool.name)) {
+				return false;
+			}
+			// --- End Positron ---
+
 			// 0. Check if the tool was disabled via the tool picker. If so, it must be disabled here
 			const toolPickerSelection = request.tools.get(getContributedToolName(tool.name));
 			if (toolPickerSelection === false) {

@@ -100,7 +100,10 @@ export abstract class BaseToolsService extends Disposable implements IToolsServi
 	abstract getEnabledTools(request: vscode.ChatRequest, filter?: (tool: vscode.LanguageModelToolInformation) => boolean | undefined): vscode.LanguageModelToolInformation[];
 
 	constructor(
-		@ILogService private readonly logService: ILogService
+		// --- Start Positron ---
+		// Made this protected rather than private so we can log from derived classes
+		@ILogService protected readonly logService: ILogService
+		// --- End Positron ---
 	) {
 		super();
 	}

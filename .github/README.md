@@ -62,7 +62,7 @@ https://github.com/posit-dev/positron-copilot-chat/blob/main/src/extension/promp
 ### Merging Upstream
 
 The coupling between the Copilot Chat extension and VS Code is extremely tight.
-It is so tight, in fact, that the APIs is it user are neither forward nor
+It is so tight, in fact, that the APIs is it use are neither forward nor
 backwards compatible, and it is necessary to update this extension in lockstep
 with VS Code itself. When taking new versions of VS Code, we need to do the
 following:
