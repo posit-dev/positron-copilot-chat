@@ -8,6 +8,7 @@ import { isDefined } from '@vscode/test-electron/out/util';
 import type { ChatRequestEditedFileEvent, LanguageModelToolInformation, NotebookEditor, TaskDefinition, TextEditor } from 'vscode';
 import { ChatLocation } from '../../../../platform/chat/common/commonTypes';
 import { ConfigKey, IConfigurationService } from '../../../../platform/configuration/common/configurationService';
+import { modelNeedsStrongReplaceStringHint } from '../../../../platform/endpoint/common/chatModelCapabilities';
 import { CacheType } from '../../../../platform/endpoint/common/endpointTypes';
 import { IEnvService, OperatingSystem } from '../../../../platform/env/common/envService';
 import { getGitHubRepoInfoFromContext, IGitService } from '../../../../platform/git/common/gitService';
@@ -41,7 +42,6 @@ import { CustomInstructions } from '../panel/customInstructions';
 import { NotebookFormat, NotebookReminderInstructions } from '../panel/notebookEditCodePrompt';
 import { NotebookSummaryChange } from '../panel/notebookSummaryChangePrompt';
 import { UserPreferences } from '../panel/preferences';
-import { TerminalCwdPrompt } from '../panel/terminalPrompt';
 import { ChatToolCalls } from '../panel/toolCalling';
 import { MultirootWorkspaceStructure } from '../panel/workspace/workspaceStructure';
 import { AgentConversationHistory } from './agentConversationHistory';
@@ -90,7 +90,8 @@ export class AgentPrompt extends PromptElement<AgentPromptProps> {
 				codesearchMode={this.props.codesearchMode}
 			/>;
 
-		const baseInstructions = <>
+		const omitBaseAgentInstructions = this.configurationService.getConfig(ConfigKey.Internal.OmitBaseAgentInstructions);
+		const baseAgentInstructions = <>
 			<SystemMessage>
 				You are an expert AI programming assistant, working with a user in the VS Code editor.<br />
 				<CopilotIdentityRules />
@@ -98,14 +99,10 @@ export class AgentPrompt extends PromptElement<AgentPromptProps> {
 			</SystemMessage>
 			<PositronAssistant promptContext={this.props.promptContext} />
 			{instructions}
-			<UserMessage>
-				<CustomInstructions languageId={undefined} chatVariables={this.props.promptContext.chatVariables} />
-				{this.props.promptContext.modeInstructions && <Tag name='customInstructions'>
-					Below are some additional instructions from the user.<br />
-					<br />
-					{this.props.promptContext.modeInstructions}
-				</Tag>}
-			</UserMessage>
+		</>;
+		const baseInstructions = <>
+			{!omitBaseAgentInstructions && baseAgentInstructions}
+			{this.getAgentCustomInstructions()}
 			<UserMessage>
 				{await this.getOrCreateGlobalAgentContext(this.props.endpoint)}
 			</UserMessage>
@@ -136,6 +133,28 @@ export class AgentPrompt extends PromptElement<AgentPromptProps> {
 				<ChatToolCalls priority={899} flexGrow={2} promptContext={this.props.promptContext} toolCallRounds={this.props.promptContext.toolCallRounds} toolCallResults={this.props.promptContext.toolCallResults} truncateAt={maxToolResultLength} enableCacheBreakpoints={false} />
 			</>;
 		}
+	}
+
+	private getAgentCustomInstructions() {
+		const putCustomInstructionsInSystemMessage = this.configurationService.getConfig(ConfigKey.CustomInstructionsInSystemMessage);
+		const customInstructionsBody = <>
+			<CustomInstructions
+				languageId={undefined}
+				chatVariables={this.props.promptContext.chatVariables}
+				includeSystemMessageConflictWarning={!putCustomInstructionsInSystemMessage}
+				customIntroduction={putCustomInstructionsInSystemMessage ? '' : undefined} // If in system message, skip the "follow these user-provided coding instructions" intro
+			/>
+			{
+				this.props.promptContext.modeInstructions && <Tag name='customInstructions'>
+					Below are some additional instructions from the user.<br />
+					<br />
+					{this.props.promptContext.modeInstructions}
+				</Tag>
+			}
+		</>;
+		return putCustomInstructionsInSystemMessage ?
+			<SystemMessage>{customInstructionsBody}</SystemMessage> :
+			<UserMessage>{customInstructionsBody}</UserMessage>;
 	}
 
 	private async getOrCreateGlobalAgentContext(endpoint: IChatEndpoint): Promise<PromptPieceChild[]> {
@@ -253,7 +272,7 @@ export class AgentUserMessage extends PromptElement<AgentUserMessageProps> {
 		}
 
 		if (this.props.isHistorical) {
-			this.logService.logger.trace('Re-rendering historical user message');
+			this.logService.trace('Re-rendering historical user message');
 		}
 
 		const query = await this.promptVariablesService.resolveToolReferencesInPrompt(this.props.request, this.props.toolReferences ?? []);
@@ -262,11 +281,13 @@ export class AgentUserMessage extends PromptElement<AgentUserMessageProps> {
 		const hasCreateFileTool = !!this.props.availableTools?.find(tool => tool.name === ToolName.CreateFile);
 		const hasEditFileTool = !!this.props.availableTools?.find(tool => tool.name === ToolName.EditFile);
 		const hasEditNotebookTool = !!this.props.availableTools?.find(tool => tool.name === ToolName.EditNotebook);
-		const hasTerminalTool = !!this.props.availableTools?.find(tool => tool.name === ToolName.RunInTerminal);
-		const attachmentHint = (this.props.endpoint.family === 'gpt-4.1') && this.props.chatVariables.hasVariables() ?
+		const hasTerminalTool = !!this.props.availableTools?.find(tool => tool.name === ToolName.CoreRunInTerminal);
+		const attachmentHint = (this.props.endpoint.family === 'gpt-4.1' || this.props.endpoint.family === 'gpt-5') && this.props.chatVariables.hasVariables() ?
 			' (See <attachments> above for file contents. You may not need to search or read the file again.)'
 			: '';
 		const hasToolsToEditNotebook = hasCreateFileTool || hasEditNotebookTool || hasReplaceStringTool || hasApplyPatchTool || hasEditFileTool;
+		const hasTodoTool = !!this.props.availableTools?.find(tool => tool.name === ToolName.CoreTodoListTool);
+
 		return (
 			<>
 				<UserMessage>
@@ -274,12 +295,11 @@ export class AgentUserMessage extends PromptElement<AgentUserMessageProps> {
 					<TokenLimit max={sizing.tokenBudget / 6} flexGrow={3} priority={898}>
 						<ChatVariables chatVariables={this.props.chatVariables} isAgent={true} omitReferences />
 					</TokenLimit>
-					<ToolReferencesHint toolReferences={this.props.toolReferences} />
+					<ToolReferencesHint toolReferences={this.props.toolReferences} modelFamily={this.props.endpoint.family} />
 					<Tag name='context'>
 						<CurrentDatePrompt />
 						<EditedFileEvents editedFileEvents={this.props.editedFileEvents} />
 						<NotebookSummaryChange />
-						{hasTerminalTool && <TerminalCwdPrompt sessionId={this.props.sessionId} />}
 						{hasTerminalTool && <TerminalAndTaskStatePromptElement sessionId={this.props.sessionId} />}
 					</Tag>
 					<CurrentEditorContext endpoint={this.props.endpoint} />
@@ -287,8 +307,9 @@ export class AgentUserMessage extends PromptElement<AgentUserMessageProps> {
 					<Tag name='reminderInstructions'>
 						{/* Critical reminders that are effective when repeated right next to the user message */}
 						{getKeepGoingReminder(this.props.endpoint.family)}
-						{getEditingReminder(hasEditFileTool, hasReplaceStringTool)}
+						{getEditingReminder(hasEditFileTool, hasReplaceStringTool, modelNeedsStrongReplaceStringHint(this.props.endpoint))}
 						<NotebookReminderInstructions chatVariables={this.props.chatVariables} query={this.props.request} />
+						{getExplanationReminder(this.props.endpoint.family, hasTodoTool)}
 					</Tag>
 					{query && <Tag name='userRequest' priority={900} flexGrow={7}>{query + attachmentHint}</Tag>}
 					{this.props.enableCacheBreakpoints && <cacheBreakpoint type={CacheType} />}
@@ -298,12 +319,12 @@ export class AgentUserMessage extends PromptElement<AgentUserMessageProps> {
 	}
 }
 
-export interface FrozenMessageContentProps extends BasePromptElementProps {
+interface FrozenMessageContentProps extends BasePromptElementProps {
 	readonly frozenContent: Raw.ChatCompletionContentPart[];
 	readonly enableCacheBreakpoints?: boolean;
 }
 
-export class FrozenContentUserMessage extends PromptElement<FrozenMessageContentProps> {
+class FrozenContentUserMessage extends PromptElement<FrozenMessageContentProps> {
 	async render(state: void, sizing: PromptSizing) {
 		return <UserMessage priority={this.props.priority}>
 			<Chunk>
@@ -317,6 +338,7 @@ export class FrozenContentUserMessage extends PromptElement<FrozenMessageContent
 
 interface ToolReferencesHintProps extends BasePromptElementProps {
 	readonly toolReferences: readonly InternalToolReference[];
+	readonly modelFamily?: string;
 }
 
 /**
@@ -331,7 +353,10 @@ class ToolReferencesHint extends PromptElement<ToolReferencesHintProps> {
 		return <>
 			<Tag name='toolReferences'>
 				The user attached the following tools to this message. The userRequest may refer to them using the tool name with "#". These tools are likely relevant to the user's query:<br />
-				{this.props.toolReferences.map(tool => `- ${tool.name}`).join('\n')}
+				{this.props.toolReferences.map(tool => `- ${tool.name}`).join('\n')} <br />
+				{this.props.modelFamily === 'gpt-5' && <>
+					Start by using the most relevant tool attached to this message—the user expects you to act with it first.<br />
+				</>}
 			</Tag>
 		</>;
 	}
@@ -467,8 +492,8 @@ class CurrentEditorContext extends PromptElement<CurrentEditorContextProps> {
 			const startCell = cellsInRange[0];
 			const endCell = cellsInRange[cellsInRange.length - 1];
 			const lastLine = endCell.document.lineAt(endCell.document.lineCount - 1);
-			const startPosition = altDocument.fromCellPosition(startCell.index, new Position(0, 0));
-			const endPosition = altDocument.fromCellPosition(endCell.index, new Position(endCell.document.lineCount - 1, lastLine.text.length));
+			const startPosition = altDocument.fromCellPosition(startCell, new Position(0, 0));
+			const endPosition = altDocument.fromCellPosition(endCell, new Position(endCell.document.lineCount - 1, lastLine.text.length));
 			const selection = new Range(startPosition, endPosition);
 			selectionText = selection ? ` The current selection is from line ${selection.start.line + 1} to line ${selection.end.line + 1}.` : '';
 		}
@@ -551,7 +576,7 @@ class AgentTasksInstructions extends PromptElement {
 		}
 
 		return <>
-			The following tasks can be executed using the {ToolName.RunTask} tool if they are not already running:<br />
+			The following tasks can be executed using the {ToolName.CoreRunTask} tool if they are not already running:<br />
 			{taskGroups.map(([folder, tasks]) =>
 				<Tag name='workspaceFolder' attrs={{ path: this._promptPathRepresentationService.getFilePath(folder) }}>
 					{tasks.map((t, i) => {
@@ -559,7 +584,7 @@ class AgentTasksInstructions extends PromptElement {
 						return (
 							<Tag name='task' attrs={{ id: `${t.type}: ${t.label || i}` }}>
 								{this.makeTaskPresentation(t)}
-								{isActive && <> (This task is currently running. You can use the {ToolName.GetTaskOutput} tool to view its output.)</>}
+								{isActive && <> (This task is currently running. You can use the {ToolName.CoreGetTaskOutput} or {ToolName.GetTaskOutput} tool to view its output.)</>}
 							</Tag>
 						);
 					})}
@@ -597,14 +622,20 @@ class AgentTasksInstructions extends PromptElement {
 	}
 }
 
-export function getEditingReminder(hasEditFileTool: boolean, hasReplaceStringTool: boolean) {
+export function getEditingReminder(hasEditFileTool: boolean, hasReplaceStringTool: boolean, useStrongReplaceStringHint: boolean) {
 	const lines = [];
 	if (hasEditFileTool) {
 		lines.push(<>When using the {ToolName.EditFile} tool, avoid repeating existing code, instead use a line comment with \`{EXISTING_CODE_MARKER}\` to represent regions of unchanged code.<br /></>);
-
 	}
 	if (hasReplaceStringTool) {
 		lines.push(<>When using the {ToolName.ReplaceString} tool, include 3-5 lines of unchanged code before and after the string you want to replace, to make it unambiguous which part of the file should be edited.<br /></>);
+	}
+	if (hasEditFileTool && hasReplaceStringTool) {
+		if (useStrongReplaceStringHint) {
+			lines.push(<>You must always try making file edits using {ToolName.ReplaceString} tool. NEVER use {ToolName.EditFile} unless told to by the user or by a tool.</>);
+		} else {
+			lines.push(<>It is much faster to edit using the {ToolName.ReplaceString} tool. Prefer {ToolName.ReplaceString} for making edits and only fall back to {ToolName.EditFile} if it fails.</>);
+		}
 	}
 
 	return lines;
@@ -618,6 +649,36 @@ export function getKeepGoingReminder(modelFamily: string | undefined) {
 		<>
 			You are an agent - you must keep going until the user's query is completely resolved, before ending your turn and yielding back to the user. ONLY terminate your turn when you are sure that the problem is solved, or you absolutely cannot continue.<br />
 			You take action when possible- the user is expecting YOU to take action and go to work for them. Don't ask unnecessary questions about the details if you can simply DO something useful instead.<br />
+		</>
+		: modelFamily === 'gpt-5' ?
+			<>
+				You are an agent—keep going until the user's query is completely resolved before ending your turn. ONLY stop if solved or genuinely blocked.<br />
+				Take action when possible; the user expects you to do useful work without unnecessary questions.<br />
+				After any parallel, read-only context gathering, give a concise progress update and what's next.<br />
+				Avoid repetition across turns: don't restate unchanged plans or sections (like the todo list) verbatim; provide delta updates or only the parts that changed.<br />
+				Tool batches: You MUST preface each batch with a one-sentence why/what/outcome preamble.<br />
+				Progress cadence: After 3 to 5 tool calls, or when you create/edit &gt; ~3 files in a burst, pause and post a compact checkpoint.<br />
+				Requirements coverage: Read the user's ask in full, extract each requirement into checklist items, and keep them visible. Do not omit a requirement. If something cannot be done with available tools, note why briefly and propose a viable alternative.<br />
+			</>
+			: undefined;
+}
+
+function getExplanationReminder(modelFamily: string | undefined, hasTodoTool?: boolean) {
+	return modelFamily === 'gpt-5' ?
+		<>
+			Skip filler acknowledgements like “Sounds good” or “Okay, I will…”. Open with a purposeful one-liner about what you're doing next.<br />
+			When sharing setup or run steps, present terminal commands in fenced code blocks with the correct language tag. Keep commands copyable and on separate lines.<br />
+			Avoid definitive claims about the build or runtime setup unless verified from the provided context (or quick tool checks). If uncertain, state what's known from attachments and proceed with minimal steps you can adapt later.<br />
+			When you create or edit runnable code, run a test yourself to confirm it works; then share optional fenced commands for more advanced runs.<br />
+			Do not state your identity or model name unless the user explicitly asks you to. <br />
+			For non-trivial code generation, produce a complete, runnable solution: necessary source files, a tiny runner or test/benchmark harness, a minimal `README.md`, and updated dependency manifests (e.g., `package.json`, `requirements.txt`, `pyproject.toml`). Offer quick "try it" commands and optional platform-specific speed-ups when relevant.<br />
+			Your goal is to act like a pair programmer: be friendly and helpful. If you can do more, do more. Be proactive with your solutions, think about what the user needs and what they want, and implement it proactively.<br />
+			<Tag name='importantReminders'>
+				ALWAYS start your response with a brief task receipt and a concise high-level plan for how you will proceed.<br />
+				{hasTodoTool && <>You MUST use the todo list tool to plan and track your progress. NEVER skip this step, and START with this step whenever the task is multi-step. This is essential for maintaining visibility and proper execution of large tasks. Follow the todoListToolInstructions strictly.<br /></>}
+				{!hasTodoTool && <>Break down the request into clear, actionable steps and present them as a checklist at the beginning of your response before proceeding with implementation. This helps maintain visibility and ensures all requirements are addressed systematically.<br /></>}
+				Every so often, explain the notable action you are about to take next, especially before multi-step or impactful tool calls.<br />
+			</Tag>
 		</>
 		: undefined;
 }
