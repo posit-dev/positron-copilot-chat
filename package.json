@@ -3754,9 +3754,6 @@
 		"yaml": "^2.8.0",
 		"zeromq": "github:rebornix/zeromq.js#a19e8e373b3abc677f91b936d3f00d49b1b61792"
 	},
-	"peerDependencies": {
-		"@vscode/prompt-tsx": "^0.4.0-alpha.5"
-	},
 	"dependencies": {
 		"@anthropic-ai/sdk": "^0.55.0",
 		"@humanwhocodes/gitignore-to-minimatch": "1.0.2",
@@ -3766,6 +3763,7 @@
 		"@vscode/extension-telemetry": "^1.0.0",
 		"@vscode/l10n": "^0.0.18",
 		"@vscode/tree-sitter-wasm": "^0.0.5",
+		"@vscode/prompt-tsx": "^0.4.0-alpha.5",
 		"@xterm/headless": "^5.5.0",
 		"ajv": "^8.17.1",
 		"applicationinsights": "^2.9.7",

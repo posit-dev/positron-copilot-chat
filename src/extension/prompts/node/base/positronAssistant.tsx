@@ -4,9 +4,7 @@
  *--------------------------------------------------------------------------------------------*/
 
 import { AssistantMessage, PromptElement, PromptSizing } from '@vscode/prompt-tsx';
-import { ChatResponsePart } from '@vscode/prompt-tsx/dist/base/vscodeTypes';
 import * as vscode from 'vscode';
-import { CancellationToken, Progress } from 'vscode';
 import { GenericBasePromptElementProps } from '../../../context/node/resolvers/genericPanelIntentInvocation';
 
 /**
@@ -14,7 +12,7 @@ import { GenericBasePromptElementProps } from '../../../context/node/resolvers/g
  * element for embedding in Copilot Chat's prompt-tsx prompts
  */
 export class PositronAssistant extends PromptElement<GenericBasePromptElementProps, any> {
-	private contentElement: PromptElement;
+	private content: string;
 
 	constructor(props: GenericBasePromptElementProps) {
 		super(props);
@@ -22,25 +20,20 @@ export class PositronAssistant extends PromptElement<GenericBasePromptElementPro
 		const api = vscode.extensions.getExtension('positron.positron-assistant')?.exports;
 
 		// Generate the content element
-		this.contentElement = api.generateAssistantPrompt(props.promptContext.request);
+		this.content = api.generateAssistantPrompt(props.promptContext.request);
 	}
 
-	override async prepare(sizing: PromptSizing,
-		progress?: Progress<ChatResponsePart>,
-		token?: CancellationToken): Promise<any> {
-		if (this.contentElement.prepare) {
-			const result = await this.contentElement.prepare(sizing, progress, token);
-			return result;
-		}
-	}
-
+	/**
+	 * Renders the component.
+	 * @param state The current state of the component.
+	 * @param sizing The sizing information for the component.
+	 *
+	 * @returns The rendered component.
+	 */
 	render(state: any, sizing: PromptSizing) {
-		// Wrap the content from the assistant extension in our own AssistantMessage
-		// to ensure proper chat message context across extension boundaries
-		const content = this.contentElement.render(state, sizing);
 		return (
 			<AssistantMessage>
-				{content}
+				{this.content}
 			</AssistantMessage>
 		);
 	}
