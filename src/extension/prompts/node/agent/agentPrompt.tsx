@@ -8,6 +8,7 @@ import { isDefined } from '@vscode/test-electron/out/util';
 import type { ChatRequestEditedFileEvent, LanguageModelToolInformation, NotebookEditor, TaskDefinition, TextEditor } from 'vscode';
 import { ChatLocation } from '../../../../platform/chat/common/commonTypes';
 import { ConfigKey, IConfigurationService } from '../../../../platform/configuration/common/configurationService';
+import { modelNeedsStrongReplaceStringHint } from '../../../../platform/endpoint/common/chatModelCapabilities';
 import { CacheType } from '../../../../platform/endpoint/common/endpointTypes';
 import { IEnvService, OperatingSystem } from '../../../../platform/env/common/envService';
 import { getGitHubRepoInfoFromContext, IGitService } from '../../../../platform/git/common/gitService';
@@ -41,7 +42,6 @@ import { CustomInstructions } from '../panel/customInstructions';
 import { NotebookFormat, NotebookReminderInstructions } from '../panel/notebookEditCodePrompt';
 import { NotebookSummaryChange } from '../panel/notebookSummaryChangePrompt';
 import { UserPreferences } from '../panel/preferences';
-import { TerminalCwdPrompt } from '../panel/terminalPrompt';
 import { ChatToolCalls } from '../panel/toolCalling';
 import { MultirootWorkspaceStructure } from '../panel/workspace/workspaceStructure';
 import { AgentConversationHistory } from './agentConversationHistory';
@@ -90,7 +90,8 @@ export class AgentPrompt extends PromptElement<AgentPromptProps> {
 				codesearchMode={this.props.codesearchMode}
 			/>;
 
-		const baseInstructions = <>
+		const omitBaseAgentInstructions = this.configurationService.getConfig(ConfigKey.Internal.OmitBaseAgentInstructions);
+		const baseAgentInstructions = <>
 			<SystemMessage>
 				You are an expert AI programming assistant, working with a user in the VS Code editor.<br />
 				<CopilotIdentityRules />
@@ -98,14 +99,10 @@ export class AgentPrompt extends PromptElement<AgentPromptProps> {
 			</SystemMessage>
 			<PositronAssistant promptContext={this.props.promptContext} />
 			{instructions}
-			<UserMessage>
-				<CustomInstructions languageId={undefined} chatVariables={this.props.promptContext.chatVariables} />
-				{this.props.promptContext.modeInstructions && <Tag name='customInstructions'>
-					Below are some additional instructions from the user.<br />
-					<br />
-					{this.props.promptContext.modeInstructions}
-				</Tag>}
-			</UserMessage>
+		</>;
+		const baseInstructions = <>
+			{!omitBaseAgentInstructions && baseAgentInstructions}
+			{this.getAgentCustomInstructions()}
 			<UserMessage>
 				{await this.getOrCreateGlobalAgentContext(this.props.endpoint)}
 			</UserMessage>
@@ -136,6 +133,28 @@ export class AgentPrompt extends PromptElement<AgentPromptProps> {
 				<ChatToolCalls priority={899} flexGrow={2} promptContext={this.props.promptContext} toolCallRounds={this.props.promptContext.toolCallRounds} toolCallResults={this.props.promptContext.toolCallResults} truncateAt={maxToolResultLength} enableCacheBreakpoints={false} />
 			</>;
 		}
+	}
+
+	private getAgentCustomInstructions() {
+		const putCustomInstructionsInSystemMessage = this.configurationService.getConfig(ConfigKey.CustomInstructionsInSystemMessage);
+		const customInstructionsBody = <>
+			<CustomInstructions
+				languageId={undefined}
+				chatVariables={this.props.promptContext.chatVariables}
+				includeSystemMessageConflictWarning={!putCustomInstructionsInSystemMessage}
+				customIntroduction={putCustomInstructionsInSystemMessage ? '' : undefined} // If in system message, skip the "follow these user-provided coding instructions" intro
+			/>
+			{
+				this.props.promptContext.modeInstructions && <Tag name='customInstructions'>
+					Below are some additional instructions from the user.<br />
+					<br />
+					{this.props.promptContext.modeInstructions}
+				</Tag>
+			}
+		</>;
+		return putCustomInstructionsInSystemMessage ?
+			<SystemMessage>{customInstructionsBody}</SystemMessage> :
+			<UserMessage>{customInstructionsBody}</UserMessage>;
 	}
 
 	private async getOrCreateGlobalAgentContext(endpoint: IChatEndpoint): Promise<PromptPieceChild[]> {
@@ -253,7 +272,7 @@ export class AgentUserMessage extends PromptElement<AgentUserMessageProps> {
 		}
 
 		if (this.props.isHistorical) {
-			this.logService.logger.trace('Re-rendering historical user message');
+			this.logService.trace('Re-rendering historical user message');
 		}
 
 		const query = await this.promptVariablesService.resolveToolReferencesInPrompt(this.props.request, this.props.toolReferences ?? []);
@@ -262,7 +281,7 @@ export class AgentUserMessage extends PromptElement<AgentUserMessageProps> {
 		const hasCreateFileTool = !!this.props.availableTools?.find(tool => tool.name === ToolName.CreateFile);
 		const hasEditFileTool = !!this.props.availableTools?.find(tool => tool.name === ToolName.EditFile);
 		const hasEditNotebookTool = !!this.props.availableTools?.find(tool => tool.name === ToolName.EditNotebook);
-		const hasTerminalTool = !!this.props.availableTools?.find(tool => tool.name === ToolName.RunInTerminal);
+		const hasTerminalTool = !!this.props.availableTools?.find(tool => tool.name === ToolName.CoreRunInTerminal);
 		const attachmentHint = (this.props.endpoint.family === 'gpt-4.1') && this.props.chatVariables.hasVariables() ?
 			' (See <attachments> above for file contents. You may not need to search or read the file again.)'
 			: '';
@@ -279,7 +298,6 @@ export class AgentUserMessage extends PromptElement<AgentUserMessageProps> {
 						<CurrentDatePrompt />
 						<EditedFileEvents editedFileEvents={this.props.editedFileEvents} />
 						<NotebookSummaryChange />
-						{hasTerminalTool && <TerminalCwdPrompt sessionId={this.props.sessionId} />}
 						{hasTerminalTool && <TerminalAndTaskStatePromptElement sessionId={this.props.sessionId} />}
 					</Tag>
 					<CurrentEditorContext endpoint={this.props.endpoint} />
@@ -287,7 +305,7 @@ export class AgentUserMessage extends PromptElement<AgentUserMessageProps> {
 					<Tag name='reminderInstructions'>
 						{/* Critical reminders that are effective when repeated right next to the user message */}
 						{getKeepGoingReminder(this.props.endpoint.family)}
-						{getEditingReminder(hasEditFileTool, hasReplaceStringTool)}
+						{getEditingReminder(hasEditFileTool, hasReplaceStringTool, modelNeedsStrongReplaceStringHint(this.props.endpoint))}
 						<NotebookReminderInstructions chatVariables={this.props.chatVariables} query={this.props.request} />
 					</Tag>
 					{query && <Tag name='userRequest' priority={900} flexGrow={7}>{query + attachmentHint}</Tag>}
@@ -467,8 +485,8 @@ class CurrentEditorContext extends PromptElement<CurrentEditorContextProps> {
 			const startCell = cellsInRange[0];
 			const endCell = cellsInRange[cellsInRange.length - 1];
 			const lastLine = endCell.document.lineAt(endCell.document.lineCount - 1);
-			const startPosition = altDocument.fromCellPosition(startCell.index, new Position(0, 0));
-			const endPosition = altDocument.fromCellPosition(endCell.index, new Position(endCell.document.lineCount - 1, lastLine.text.length));
+			const startPosition = altDocument.fromCellPosition(startCell, new Position(0, 0));
+			const endPosition = altDocument.fromCellPosition(endCell, new Position(endCell.document.lineCount - 1, lastLine.text.length));
 			const selection = new Range(startPosition, endPosition);
 			selectionText = selection ? ` The current selection is from line ${selection.start.line + 1} to line ${selection.end.line + 1}.` : '';
 		}
@@ -551,7 +569,7 @@ class AgentTasksInstructions extends PromptElement {
 		}
 
 		return <>
-			The following tasks can be executed using the {ToolName.RunTask} tool if they are not already running:<br />
+			The following tasks can be executed using the {ToolName.CoreRunTask} tool if they are not already running:<br />
 			{taskGroups.map(([folder, tasks]) =>
 				<Tag name='workspaceFolder' attrs={{ path: this._promptPathRepresentationService.getFilePath(folder) }}>
 					{tasks.map((t, i) => {
@@ -559,7 +577,7 @@ class AgentTasksInstructions extends PromptElement {
 						return (
 							<Tag name='task' attrs={{ id: `${t.type}: ${t.label || i}` }}>
 								{this.makeTaskPresentation(t)}
-								{isActive && <> (This task is currently running. You can use the {ToolName.GetTaskOutput} tool to view its output.)</>}
+								{isActive && <> (This task is currently running. You can use the {ToolName.CoreGetTaskOutput} or {ToolName.GetTaskOutput} tool to view its output.)</>}
 							</Tag>
 						);
 					})}
@@ -597,14 +615,20 @@ class AgentTasksInstructions extends PromptElement {
 	}
 }
 
-export function getEditingReminder(hasEditFileTool: boolean, hasReplaceStringTool: boolean) {
+export function getEditingReminder(hasEditFileTool: boolean, hasReplaceStringTool: boolean, useStrongReplaceStringHint: boolean) {
 	const lines = [];
 	if (hasEditFileTool) {
 		lines.push(<>When using the {ToolName.EditFile} tool, avoid repeating existing code, instead use a line comment with \`{EXISTING_CODE_MARKER}\` to represent regions of unchanged code.<br /></>);
-
 	}
 	if (hasReplaceStringTool) {
 		lines.push(<>When using the {ToolName.ReplaceString} tool, include 3-5 lines of unchanged code before and after the string you want to replace, to make it unambiguous which part of the file should be edited.<br /></>);
+	}
+	if (hasEditFileTool && hasReplaceStringTool) {
+		if (useStrongReplaceStringHint) {
+			lines.push(<>You must always try making file edits using {ToolName.ReplaceString} tool. NEVER use {ToolName.EditFile} unless told to by the user or by a tool.</>);
+		} else {
+			lines.push(<>It is much faster to edit using the {ToolName.ReplaceString} tool. Prefer {ToolName.ReplaceString} for making edits and only fall back to {ToolName.EditFile} if it fails.</>);
+		}
 	}
 
 	return lines;

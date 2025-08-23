@@ -2,17 +2,18 @@
  *  Copyright (c) Microsoft Corporation. All rights reserved.
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
-import type tt from 'typescript/lib/tsserverlibrary';
+import tt from 'typescript/lib/tsserverlibrary';
 import TS from './typescript';
 const ts = TS();
 
 import { FunctionLikeContextProvider, FunctionLikeContextRunnable } from './baseContextProviders';
 import { CodeSnippetBuilder } from './code';
 import {
-	AbstractContextRunnable, ComputeCost, ContextResult, RecoverableError, Search, type ComputeContextSession, type ContextRunnableCollector, type ProviderComputeContext, type RequestContext,
+	AbstractContextRunnable, ComputeCost, ContextResult, Search, type ComputeContextSession, type ContextRunnableCollector, type ProviderComputeContext, type RequestContext,
 	type RunnableResult
 } from './contextProvider';
 import { EmitMode, Priorities, SpeculativeKind, type CacheInfo } from './protocol';
+import { RecoverableError } from './types';
 import tss, { ClassDeclarations, Declarations, Symbols, Traversal, type StateProvider, type TokenInfo } from './typescripts';
 
 abstract class ClassPropertyBlueprintSearch<T extends tt.MethodDeclaration | tt.ConstructorDeclaration> extends Search<tt.ClassDeclaration> {
@@ -429,13 +430,13 @@ class FindMethodInHierarchySearch extends MethodBlueprintSearch {
 abstract class SimilarPropertyRunnable<T extends tt.MethodDeclaration | tt.ConstructorDeclaration> extends FunctionLikeContextRunnable<T> {
 
 	constructor(session: ComputeContextSession, languageService: tt.LanguageService, context: RequestContext, declaration: T, priority: number = Priorities.Blueprints) {
-		super(session, languageService, context, SimilarPropertyRunnable.name, declaration, priority, ComputeCost.High);
+		super(session, languageService, context, 'SimilarPropertyRunnable', declaration, priority, ComputeCost.High);
 	}
 
 	protected override createRunnableResult(result: ContextResult): RunnableResult {
 		const scope = this.getCacheScope();
 		const cacheInfo: CacheInfo | undefined = scope !== undefined ? { emitMode: EmitMode.ClientBased, scope } : undefined;
-		return result.createRunnableResult(this.id, cacheInfo);
+		return result.createRunnableResult(this.id, this.priority, SpeculativeKind.emit, cacheInfo);
 	}
 
 	protected override run(result: RunnableResult, token: tt.CancellationToken): void {
@@ -450,7 +451,7 @@ abstract class SimilarPropertyRunnable<T extends tt.MethodDeclaration | tt.Const
 				const sourceFile = this.declaration.getSourceFile();
 				const snippetBuilder = new CodeSnippetBuilder(this.session, this.context.getSymbols(program), sourceFile);
 				snippetBuilder.addDeclaration(candidate);
-				result.addSnippet(snippetBuilder, undefined, this.priority, SpeculativeKind.emit);
+				result.addSnippet(snippetBuilder, undefined);
 			}
 		}
 	}
@@ -469,7 +470,7 @@ class SimilarMethodRunnable extends SimilarPropertyRunnable<tt.MethodDeclaration
 	}
 }
 
-abstract class ClassPropertyContextProvider<T extends tt.MethodDeclaration | tt.ConstructorDeclaration> extends FunctionLikeContextProvider {
+abstract class ClassPropertyContextProvider<T extends tt.MethodDeclaration | tt.ConstructorDeclaration | tt.GetAccessorDeclaration | tt.SetAccessorDeclaration> extends FunctionLikeContextProvider {
 
 	protected readonly declaration: T;
 	public override readonly isCallableProvider: boolean;
@@ -507,16 +508,20 @@ abstract class ClassPropertyContextProvider<T extends tt.MethodDeclaration | tt.
 
 class PropertiesTypeRunnable extends AbstractContextRunnable {
 
-	private readonly declaration: tt.MethodDeclaration | tt.ConstructorDeclaration;
+	private readonly declaration: tt.MethodDeclaration | tt.ConstructorDeclaration | tt.GetAccessorDeclaration | tt.SetAccessorDeclaration;
 
-	constructor(session: ComputeContextSession, languageService: tt.LanguageService, context: RequestContext, declaration: tt.MethodDeclaration | tt.ConstructorDeclaration, priority: number = Priorities.Properties) {
-		super(session, languageService, context, PropertiesTypeRunnable.name, priority, ComputeCost.Medium);
+	constructor(session: ComputeContextSession, languageService: tt.LanguageService, context: RequestContext, declaration: tt.MethodDeclaration | tt.ConstructorDeclaration | tt.GetAccessorDeclaration | tt.SetAccessorDeclaration, priority: number = Priorities.Properties) {
+		super(session, languageService, context, 'PropertiesTypeRunnable', priority, ComputeCost.Medium);
 		this.declaration = declaration;
+	}
+
+	public override getActiveSourceFile(): tt.SourceFile {
+		return this.declaration.getSourceFile();
 	}
 
 	protected override createRunnableResult(result: ContextResult): RunnableResult {
 		const cacheInfo: CacheInfo | undefined = { emitMode: EmitMode.ClientBased, scope: this.createCacheScope(this.declaration) };
-		return result.createRunnableResult(this.id, cacheInfo);
+		return result.createRunnableResult(this.id, this.priority, SpeculativeKind.emit, cacheInfo);
 	}
 
 	protected override run(result: RunnableResult, token: tt.CancellationToken): void {
@@ -543,7 +548,7 @@ class PropertiesTypeRunnable extends AbstractContextRunnable {
 				if (member === methodSymbol) {
 					continue;
 				}
-				if (!this.handleSymbol(result, member, symbols, ts.ModifierFlags.Private | ts.ModifierFlags.Protected)) {
+				if (!this.handleMember(result, member, symbols, ts.ModifierFlags.Private | ts.ModifierFlags.Protected)) {
 					return;
 				}
 			}
@@ -556,30 +561,24 @@ class PropertiesTypeRunnable extends AbstractContextRunnable {
 			}
 			for (const member of type.members.values()) {
 				token.throwIfCancellationRequested();
-				if (!this.handleSymbol(result, member, symbols, ts.ModifierFlags.Protected)) {
+				if (!this.handleMember(result, member, symbols, ts.ModifierFlags.Protected)) {
 					return;
 				}
 			}
 		}
 	}
 
-	private handleSymbol(result: RunnableResult, symbol: tt.Symbol, symbols: Symbols, flags: tt.ModifierFlags): boolean {
+	private handleMember(_result: RunnableResult, symbol: tt.Symbol, symbols: Symbols, flags: tt.ModifierFlags): boolean {
 		if (!Symbols.hasModifierFlags(symbol, flags)) {
 			return true;
 		}
 
-		const sourceFile = this.declaration.getSourceFile();
 		let continueResult: boolean = true;
-		for (const [typeSymbol, name] of this.getEmitData(symbol, symbols)) {
+		for (const [typeSymbol, name] of this.getEmitMemberData(symbol, symbols)) {
 			if (typeSymbol === undefined) {
 				continue;
 			}
-			const [handled, key] = this.handleSymbolIfKnown(result, typeSymbol);
-			if (!handled) {
-				const snippetBuilder = new CodeSnippetBuilder(this.session, this.symbols, sourceFile);
-				snippetBuilder.addTypeSymbol(typeSymbol, name);
-				continueResult = continueResult && result.addSnippet(snippetBuilder, key, this.priority, SpeculativeKind.emit, true);
-			}
+			continueResult = continueResult && this.handleSymbol(typeSymbol, name, true);
 			if (!continueResult) {
 				break;
 			}
@@ -588,7 +587,7 @@ class PropertiesTypeRunnable extends AbstractContextRunnable {
 	}
 
 	private static readonly NoEmitData: readonly [tt.Symbol | undefined, string | undefined] = Object.freeze<[tt.Symbol | undefined, string | undefined]>([undefined, undefined]);
-	private *getEmitData(symbol: tt.Symbol, symbols: Symbols): IterableIterator<readonly [tt.Symbol | undefined, string | undefined]> {
+	private *getEmitMemberData(symbol: tt.Symbol, symbols: Symbols): IterableIterator<readonly [tt.Symbol | undefined, string | undefined]> {
 		if (Symbols.isProperty(symbol)) {
 			const type = symbols.getTypeChecker().getTypeOfSymbol(symbol);
 			let typeSymbol = type.symbol;
@@ -641,6 +640,18 @@ export class MethodContextProvider extends ClassPropertyContextProvider<tt.Metho
 		if (session.enableBlueprintSearch()) {
 			result.addPrimary(new SimilarMethodRunnable(session, languageService, context, this.declaration));
 		}
+		super.provide(result, session, languageService, context, token);
+		result.addSecondary(new PropertiesTypeRunnable(session, languageService, context, this.declaration));
+	}
+}
+
+export class AccessorProvider extends ClassPropertyContextProvider<tt.GetAccessorDeclaration | tt.SetAccessorDeclaration> {
+
+	constructor(declaration: tt.GetAccessorDeclaration | tt.SetAccessorDeclaration, tokenInfo: TokenInfo, computeContext: ProviderComputeContext) {
+		super(declaration, tokenInfo, computeContext);
+	}
+
+	public override provide(result: ContextRunnableCollector, session: ComputeContextSession, languageService: tt.LanguageService, context: RequestContext, token: tt.CancellationToken): void {
 		super.provide(result, session, languageService, context, token);
 		result.addSecondary(new PropertiesTypeRunnable(session, languageService, context, this.declaration));
 	}

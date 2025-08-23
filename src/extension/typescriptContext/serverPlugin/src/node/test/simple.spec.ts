@@ -86,6 +86,18 @@ suite('Type Alias', () => {
 			kind: ContextKind.Snippet,
 			value: 'export class W implements Both { name() { return \'w\'; } length() { return \'w\'.length; } }',
 			fileName: /p4\/source\/f2.ts$/
+		}, {
+			kind: ContextKind.Snippet,
+			value: 'export type Both = Name & NameLength;',
+			fileName: /p4\/source\/f1.ts$/
+		}, {
+			kind: ContextKind.Snippet,
+			value: 'interface Name { name(): string; }',
+			fileName: /p4\/source\/f1.ts$/
+		}, {
+			kind: ContextKind.Snippet,
+			value: 'type NameLength = { length(): number; }',
+			fileName: /p4\/source\/f1.ts$/
 		}];
 		const context = computeContext(session, path.join(root, 'p4/source/f5.ts'), { line: 3, character: 0 }, ContextKind.Snippet);
 		assertContextItems(context, expected);
@@ -303,12 +315,12 @@ suite('PropertyTypes', () => {
 		const expected: testing.ExpectedCodeSnippet[] = [
 			{
 				kind: ContextKind.Snippet,
-				value: 'declare class Street { constructor(name: string); public getName(); }',
+				value: 'type Age = { value: number; }',
 				fileName: /p13\/source\/f1.ts$/
 			},
 			{
 				kind: ContextKind.Snippet,
-				value: 'type Age = { value: number; }',
+				value: 'declare class Street { constructor(name: string); public getName(); }',
 				fileName: /p13\/source\/f1.ts$/
 			}
 		];

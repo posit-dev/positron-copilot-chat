@@ -11,11 +11,11 @@ import { ContextItemResultBuilder, type ContextComputedEvent, type ContextItemSu
 
 class TreePropertyItem {
 
-	private readonly parent: TreeContextItem | TreeYieldedContextItem | TreeCacheInfo;
+	private readonly parent: TreeContextItem | TreeYieldedContextItem | TreeCacheInfo | TreeRunnableResult;
 	private readonly name: string;
 	private readonly value: string;
 
-	constructor(parent: TreeContextItem | TreeYieldedContextItem | TreeCacheInfo, name: string, value: string) {
+	constructor(parent: TreeContextItem | TreeYieldedContextItem | TreeCacheInfo | TreeRunnableResult, name: string, value: string) {
 		this.parent = parent;
 		this.name = name;
 		this.value = value;
@@ -79,7 +79,6 @@ class TreeTrait extends TreeContextItem {
 		properties.push(new TreePropertyItem(this, 'key', this.from.key));
 		properties.push(new TreePropertyItem(this, 'name', this.from.name));
 		properties.push(new TreePropertyItem(this, 'value', this.from.value));
-		properties.push(new TreePropertyItem(this, 'priority', this.from.priority.toString()));
 		return properties;
 	}
 
@@ -113,7 +112,6 @@ class TreeSnippet extends TreeContextItem {
 		const properties: TreePropertyItem[] = [];
 		properties.push(new TreePropertyItem(this, 'key', this.from.key ?? 'undefined'));
 		properties.push(new TreePropertyItem(this, 'value', this.from.value));
-		properties.push(new TreePropertyItem(this, 'priority', this.from.priority.toString()));
 		properties.push(new TreePropertyItem(this, 'path', this.from.fileName));
 		return properties;
 	}
@@ -214,11 +212,13 @@ class TreeRunnableResult {
 		return `${this.parent.id}.${this.from.id}`;
 	}
 
-	public children(): (TreeTrait | TreeSnippet | TreeCacheInfo)[] {
-		const result: (TreeTrait | TreeSnippet | TreeCacheInfo)[] = this.items;
+	public children(): (TreeTrait | TreeSnippet | TreeCacheInfo | TreePropertyItem)[] {
+		const result: (TreeTrait | TreeSnippet | TreeCacheInfo | TreePropertyItem)[] = this.items;
 		if (this.from.cache !== undefined) {
 			result.push(new TreeCacheInfo(this.from.cache));
 		}
+		result.push(new TreePropertyItem(this, 'priority', this.from.priority.toString()));
+
 		return result;
 	}
 
@@ -228,7 +228,7 @@ class TreeRunnableResult {
 			id = id.substring(1); // Remove leading underscore for display purposes
 		}
 		const cacheInfo = this.from.cache !== undefined ? 1 : 0;
-		let label = `${id} - ${this.items.length} items`;
+		let label = `${id} - ${this.items.length} items - ${this.from.state}`;
 		if (this.parent.summary.serverComputed?.has(this.from.id)) {
 			label += ' - ⏳';
 		}
@@ -390,11 +390,13 @@ class TreeContextRequest {
 		this.position = event.position;
 		this.items = event.results;
 		this.summary = event.summary;
-		const now = new Date();
-		const timeString = `${now.getMinutes().toString().padStart(2, '0')}:${now.getSeconds().toString().padStart(2, '0')}.${now.getMilliseconds().toString().padStart(3, '0')}`;
-		this.label = `${label} - ${timeString} - [${this.position.line + 1}:${this.position.character + 1}]`;
+		const start = new Date(Date.now() - this.summary.totalTime);
+		const timeString = `${start.getMinutes().toString().padStart(2, '0')}:${start.getSeconds().toString().padStart(2, '0')}.${start.getMilliseconds().toString().padStart(3, '0')}`;
+		this.label = `[${timeString}] - [${this.position.line + 1}:${this.position.character + 1}] ${label} - ${this.summary.stats.yielded} items`;
 		if (this.summary.serverComputed && this.summary.serverComputed.size > 0) {
 			this.label += ` - ⏳ ${this.summary.totalTime}ms`;
+		} else {
+			this.label += ` - ${this.summary.totalTime}ms`;
 		}
 	}
 
@@ -454,13 +456,13 @@ export class InspectorDataProvider implements vscode.TreeDataProvider<InspectorI
 		this.onDidChangeTreeData = this._onDidChangeTreeData.event;
 		this.items = [];
 		this.languageContextService.onCachePopulated((event) => {
-			this.addContextRequest(new TreeContextRequest(`Cache Population Request`, event));
+			this.addContextRequest(new TreeContextRequest(`Cache`, event));
 		});
 		this.languageContextService.onContextComputed((event) => {
-			this.addContextRequest(new TreeContextRequest(`Context Compute Request`, event));
+			this.addContextRequest(new TreeContextRequest(`Context`, event));
 		});
 		this.languageContextService.onContextComputedOnTimeout((event) => {
-			this.addContextRequest(new TreeContextRequest(`Context On Timeout Request`, event));
+			this.addContextRequest(new TreeContextRequest(`OnTimeout`, event));
 		});
 	}
 

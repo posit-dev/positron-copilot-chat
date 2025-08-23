@@ -176,6 +176,7 @@ const webExtHostBuildOptions = {
 	format: 'cjs', // Necessary to export activate function from bundle for extension
 	external: [
 		'vscode',
+		'http',
 	]
 } satisfies esbuild.BuildOptions;
 

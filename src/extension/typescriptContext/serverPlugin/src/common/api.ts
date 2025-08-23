@@ -8,12 +8,13 @@ const ts = TS();
 
 import { CompilerOptionsRunnable } from './baseContextProviders';
 import { ClassContextProvider } from './classContextProvider';
-import { ContextProvider, ContextRunnableCollector, RecoverableError, RequestContext, type ComputeContextSession, type ContextProviderFactory, type ContextResult, type ContextRunnable, type ProviderComputeContext } from './contextProvider';
+import { ContextProvider, ContextRunnableCollector, RequestContext, type ComputeContextSession, type ContextProviderFactory, type ContextResult, type ContextRunnable, type ProviderComputeContext } from './contextProvider';
 import { FunctionContextProvider } from './functionContextProvider';
-import { ConstructorContextProvider, MethodContextProvider } from './methodContextProvider';
+import { AccessorProvider, ConstructorContextProvider, MethodContextProvider } from './methodContextProvider';
 import { ModuleContextProvider } from './moduleContextProvider';
 import { type FilePath } from './protocol';
 import { SourceFileContextProvider } from './sourceFileContextProvider';
+import { RecoverableError } from './types';
 import tss from './typescripts';
 
 class ProviderComputeContextImpl implements ProviderComputeContext {
@@ -43,6 +44,8 @@ class ContextProviders {
 		[ts.SyntaxKind.FunctionDeclaration, (node, tokenInfo, computeContext) => new FunctionContextProvider(node as tt.FunctionDeclaration, tokenInfo, computeContext)],
 		[ts.SyntaxKind.ArrowFunction, (node, tokenInfo, computeContext) => new FunctionContextProvider(node as tt.ArrowFunction, tokenInfo, computeContext)],
 		[ts.SyntaxKind.FunctionExpression, (node, tokenInfo, computeContext) => new FunctionContextProvider(node as tt.FunctionExpression, tokenInfo, computeContext)],
+		[ts.SyntaxKind.GetAccessor, (node, tokenInfo, computeContext) => new AccessorProvider(node as tt.GetAccessorDeclaration, tokenInfo, computeContext)],
+		[ts.SyntaxKind.SetAccessor, (node, tokenInfo, computeContext) => new AccessorProvider(node as tt.SetAccessorDeclaration, tokenInfo, computeContext)],
 		[ts.SyntaxKind.ClassDeclaration, ClassContextProvider.create as unknown as ContextProviderFactory],
 		[ts.SyntaxKind.Constructor, (node, tokenInfo, computeContext) => new ConstructorContextProvider(node as tt.ConstructorDeclaration, tokenInfo, computeContext)],
 		[ts.SyntaxKind.MethodDeclaration, (node, tokenInfo, computeContext) => new MethodContextProvider(node as tt.MethodDeclaration, tokenInfo, computeContext)],
@@ -87,7 +90,7 @@ class ContextProviders {
 
 	private getContextRunnables(session: ComputeContextSession, languageService: tt.LanguageService, context: RequestContext, token: tt.CancellationToken): ContextRunnableCollector {
 		const result: ContextRunnableCollector = new ContextRunnableCollector(context.clientSideRunnableResults);
-		result.addPrimary(new CompilerOptionsRunnable(session, languageService, context));
+		result.addPrimary(new CompilerOptionsRunnable(session, languageService, context, this.tokenInfo.token.getSourceFile()));
 		const providers = this.computeProviders();
 		for (const provider of providers) {
 			provider.provide(result, session, languageService, context, token);
@@ -128,10 +131,12 @@ class ContextProviders {
 export function computeContext(result: ContextResult, session: ComputeContextSession, languageService: tt.LanguageService, document: FilePath, position: number, token: tt.CancellationToken): void {
 	const program = languageService.getProgram();
 	if (program === undefined) {
+		result.addErrorData(new RecoverableError(`No program found on language service`, RecoverableError.NoProgram));
 		return;
 	}
 	const sourceFile = program.getSourceFile(document);
 	if (sourceFile === undefined) {
+		result.addErrorData(new RecoverableError(`No source file found for document`, RecoverableError.NoSourceFile));
 		return;
 	}
 

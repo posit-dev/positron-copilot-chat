@@ -25,6 +25,7 @@
   * [API updates](#api-updates)
     * [Making breaking changes to API](#making-breaking-changes-to-api)
     * [Making additive changes to API](#making-additive-changes-to-api)
+  * [Running with Code OSS](#running-with-code-oss)
 
 # Creating good issues
 
@@ -69,6 +70,7 @@ Please include the following with each issue:
 - Node 22.x
 - Python >= 3.10, <= 3.12
 - Git Large File Storage (LFS) - for running tests
+- (Windows) Visual Studio Build Tools >=2019 - for building with node-gyp [see node-gyp docs](https://github.com/nodejs/node-gyp?tab=readme-ov-file#on-windows)
 
 ### First-time setup
 - on Windows you need to run `Set-ExecutionPolicy Unrestricted` as admin in Powershell.
@@ -95,7 +97,7 @@ There are also integration tests that run within VS Code itself:
 npm run test:extension
 ```
 
-Finally, there are **simulation tests**. These tests reach out to Copilot API endpoints, invoke LLMs and require expensive computations to run. Each test runs 10 times, to accomodate for the stochastic nature of LLMs themselves. The results of all runs of all tests are snapshotted in the baseline file, [`test/simulation/baseline.json`](test/simulation/baseline.json), which encodes the quality of the test suite at any given point in time.
+Finally, there are **simulation tests**. These tests reach out to Copilot API endpoints, invoke LLMs and require expensive computations to run. Each test runs 10 times, to accommodate for the stochastic nature of LLMs themselves. The results of all runs of all tests are snapshotted in the baseline file, [`test/simulation/baseline.json`](test/simulation/baseline.json), which encodes the quality of the test suite at any given point in time.
 
 Because LLM results are both random and costly, they are cached within the repo in `test/simulation/cache`. This means rerunning the simulation tests and benefiting from the cache will make the test run be both faster as well as deterministic.
 
@@ -329,3 +331,73 @@ Examples of additive changes
 - Adding a new response type to `ChatResponseStream`
 - Adding a new API proposal
 - Adding a new method to an existing interface
+
+## Running with Code OSS
+
+You can run the extension from Code OSS, provided that you follow along these steps:
+- Create a top level `product.overrides.json` in the `vscode` repository
+- Add below contents as JSON
+- Run the extension launch configuration in Code OSS
+
+```json
+{
+   "defaultChatAgent": {
+      "extensionId": "GitHub.copilot",
+      "chatExtensionId": "GitHub.copilot-chat",
+      "documentationUrl": "https://aka.ms/github-copilot-overview",
+      "termsStatementUrl": "https://aka.ms/github-copilot-terms-statement",
+      "privacyStatementUrl": "https://aka.ms/github-copilot-privacy-statement",
+      "skusDocumentationUrl": "https://aka.ms/github-copilot-plans",
+      "publicCodeMatchesUrl": "https://aka.ms/github-copilot-match-public-code",
+      "manageSettingsUrl": "https://aka.ms/github-copilot-settings",
+      "managePlanUrl": "https://aka.ms/github-copilot-manage-plan",
+      "manageOverageUrl": "https://aka.ms/github-copilot-manage-overage",
+      "upgradePlanUrl": "https://aka.ms/github-copilot-upgrade-plan",
+      "signUpUrl": "https://aka.ms/github-sign-up",
+      "provider": {
+         "default": {
+            "id": "github",
+            "name": "GitHub"
+         },
+         "enterprise": {
+            "id": "github-enterprise",
+            "name": "GHE.com"
+         },
+         "google": {
+            "id": "google",
+            "name": "Google"
+         },
+         "apple": {
+            "id": "apple",
+            "name": "Apple"
+         }
+      },
+      "providerUriSetting": "github-enterprise.uri",
+      "providerScopes": [
+         [
+            "user:email"
+         ],
+         [
+            "read:user"
+         ],
+         [
+            "read:user",
+            "user:email",
+            "repo",
+            "workflow"
+         ]
+      ],
+      "entitlementUrl": "https://api.github.com/copilot_internal/user",
+      "entitlementSignupLimitedUrl": "https://api.github.com/copilot_internal/subscribe_limited_user",
+      "chatQuotaExceededContext": "github.copilot.chat.quotaExceeded",
+      "completionsQuotaExceededContext": "github.copilot.completions.quotaExceeded",
+      "walkthroughCommand": "github.copilot.open.walkthrough",
+      "completionsMenuCommand": "github.copilot.toggleStatusMenu",
+      "completionsRefreshTokenCommand": "github.copilot.signIn",
+      "chatRefreshTokenCommand": "github.copilot.refreshToken",
+      "completionsAdvancedSetting": "github.copilot.advanced",
+      "completionsEnablementSetting": "github.copilot.enable",
+      "nextEditSuggestionsSetting": "github.copilot.nextEditSuggestions.enabled"
+   }
+}
+```

@@ -264,16 +264,20 @@ export class SuperClassRunnable extends AbstractContextRunnable {
 	private readonly classDeclaration: tt.ClassDeclaration;
 
 	constructor(session: ComputeContextSession, languageService: tt.LanguageService, context: RequestContext, classDeclaration: tt.ClassDeclaration, priority: number = Priorities.Inherited) {
-		super(session, languageService, context, SuperClassRunnable.name, priority, ComputeCost.Medium);
+		super(session, languageService, context, 'SuperClassRunnable', priority, ComputeCost.Medium);
 		this.classDeclaration = classDeclaration;
+	}
+
+	public override getActiveSourceFile(): tt.SourceFile {
+		return this.classDeclaration.getSourceFile();
 	}
 
 	protected override createRunnableResult(result: ContextResult): RunnableResult {
 		const cacheScope = this.createCacheScope(this.classDeclaration.members, this.classDeclaration.getSourceFile());
-		return result.createRunnableResult(this.id, { emitMode: EmitMode.ClientBased, scope: cacheScope });
+		return result.createRunnableResult(this.id, this.priority, SpeculativeKind.emit, { emitMode: EmitMode.ClientBased, scope: cacheScope });
 	}
 
-	protected override run(result: RunnableResult, _token: tt.CancellationToken): void {
+	protected override run(_result: RunnableResult, _token: tt.CancellationToken): void {
 		const symbols = this.symbols;
 		const clazz = symbols.getLeafSymbolAtLocation(this.classDeclaration.name ?? this.classDeclaration);
 		if (clazz === undefined || !Symbols.isClass(clazz) || clazz.declarations === undefined) {
@@ -282,14 +286,7 @@ export class SuperClassRunnable extends AbstractContextRunnable {
 
 		const [extendsClass, extendsName] = symbols.getExtendsSymbol(clazz);
 		if (extendsClass !== undefined && extendsName !== undefined) {
-			const [handled, key] = this.handleSymbolIfKnown(result, extendsClass);
-			if (handled) {
-				return;
-			}
-			const sourceFile = this.classDeclaration.getSourceFile();
-			const snippetBuilder: CodeSnippetBuilder = new CodeSnippetBuilder(this.session, symbols, sourceFile);
-			snippetBuilder.addClassSymbol(extendsClass, extendsName, true, false);
-			result.addSnippet(snippetBuilder, key, this.priority, SpeculativeKind.emit);
+			this.handleSymbol(extendsClass, extendsName);
 		}
 	}
 }
@@ -299,12 +296,16 @@ class SimilarClassRunnable extends AbstractContextRunnable {
 	private readonly classDeclaration: tt.ClassDeclaration;
 
 	constructor(session: ComputeContextSession, languageService: tt.LanguageService, context: RequestContext, classDeclaration: tt.ClassDeclaration, priority: number = Priorities.Blueprints) {
-		super(session, languageService, context, SimilarClassRunnable.name, priority, ComputeCost.High);
+		super(session, languageService, context, 'SimilarClassRunnable', priority, ComputeCost.High);
 		this.classDeclaration = classDeclaration;
 	}
 
+	public override getActiveSourceFile(): tt.SourceFile {
+		return this.classDeclaration.getSourceFile();
+	}
+
 	protected override createRunnableResult(result: ContextResult): RunnableResult {
-		return result.createRunnableResult(this.id);
+		return result.createRunnableResult(this.id, this.priority, SpeculativeKind.emit);
 	}
 
 	protected override run(result: RunnableResult, token: tt.CancellationToken): void {
@@ -324,7 +325,7 @@ class SimilarClassRunnable extends AbstractContextRunnable {
 		}
 		const code = new CodeSnippetBuilder(this.session, this.context.getSymbols(foundInProgram), classDeclaration.getSourceFile());
 		code.addDeclaration(similarClass.declaration);
-		result.addSnippet(code, undefined, this.priority, SpeculativeKind.emit);
+		result.addSnippet(code, undefined);
 	}
 }
 
