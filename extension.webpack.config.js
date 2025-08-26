@@ -15,25 +15,25 @@ const fs = require('fs');
 class ESBuildPlugin {
 	apply(compiler) {
 		compiler.hooks.run.tapAsync('ESBuildPlugin', async (compilation, callback) => {
-			await this.build();
+			await this.build(compiler);
 			callback();
 		});
 
 		compiler.hooks.watchRun.tapAsync('ESBuildPlugin', async (compilation, callback) => {
-			await this.build();
+			await this.build(compiler);
 			callback();
 		});
 	}
 
-	async build() {
-		const isDev = process.env.NODE_ENV === 'development';
+	async build(compiler) {
+		const isDev = process.env.NODE_ENV === 'development' || compiler.options.mode === 'development';
 
 		// Base esbuild options matching the .esbuild.ts configuration for vscode-node target
 		/** @type {import('esbuild').BuildOptions} */
 		const buildOptions = {
 			bundle: true,
 			logLevel: 'info',
-			minify: !isDev,
+			minify: false,
 			outdir: path.resolve(__dirname, './dist'),
 			sourcemap: isDev ? 'linked' : false,
 			sourcesContent: false,
@@ -60,7 +60,6 @@ class ESBuildPlugin {
 
 				// VS Code provided APIs
 				'vscode',
-				'@vscode/prompt-tsx',
 			],
 			platform: 'node',
 			format: 'cjs', // Force CommonJS output format
@@ -76,7 +75,11 @@ class ESBuildPlugin {
 				{ in: path.resolve(__dirname, './src/platform/tfidf/node/tfidfWorker.ts'), out: 'tfidfWorker' },
 				{ in: path.resolve(__dirname, './src/extension/onboardDebug/node/copilotDebugWorker/index.ts'), out: 'copilotDebugCommand' },
 			],
-			loader: { '.ps1': 'text' },
+			loader: {
+				'.ps1': 'text',
+				'.css': 'text',
+				'.scss': 'text'
+			},
 			absWorkingDir: __dirname
 		};
 
@@ -92,13 +95,16 @@ class ESBuildPlugin {
 
 // Create a minimal webpack config that just uses our esbuild plugin
 const config = {
-	mode: 'development',
+	mode: 'none', // Prevent Webpack from auto-optimizing, ESBuild handles the bundling
 	// Use a dummy entry since ESBuild handles the real entry point
 	entry: './package.json',
 	output: {
 		path: path.resolve(__dirname, 'dist'),
 		filename: 'dummy.js', // Use a different filename to avoid conflicts
 		libraryTarget: 'commonjs2'
+	},
+	optimization: {
+		minimize: false // Explicitly disable minification since ESBuild handles it
 	},
 	performance: {
 		hints: false // Disable performance warnings for large extension bundles
@@ -120,7 +126,7 @@ const config = {
 								'extension.js',
 								'extension.js.map',
 								'worker2.js',
-								'worker2.js.map', 
+								'worker2.js.map',
 								'tikTokenizerWorker.js',
 								'tikTokenizerWorker.js.map',
 								'diffWorker.js',
@@ -130,7 +136,7 @@ const config = {
 								'copilotDebugCommand.js',
 								'copilotDebugCommand.js.map'
 							];
-							
+
 							// Add each esbuild output file as a webpack asset
 							expectedFiles.forEach(file => {
 								const filePath = path.join(distPath, file);
@@ -145,7 +151,7 @@ const config = {
 						}
 					);
 				});
-				
+
 				// Clean up the dummy file
 				compiler.hooks.afterEmit.tap('CleanupDummyFile', () => {
 					const dummyFile = path.resolve(__dirname, 'dist', 'dummy.js');
