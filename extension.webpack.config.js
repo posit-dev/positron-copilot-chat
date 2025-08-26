@@ -102,9 +102,48 @@ const config = {
 	},
 	plugins: [
 		new ESBuildPlugin(),
-		// Clean up the dummy file after ESBuild runs
+		// Add esbuild output files as webpack assets
 		{
 			apply(compiler) {
+				compiler.hooks.thisCompilation.tap('AddESBuildAssets', (compilation) => {
+					compilation.hooks.processAssets.tap(
+						{
+							name: 'AddESBuildAssets',
+							stage: compiler.webpack.Compilation.PROCESS_ASSETS_STAGE_ADDITIONAL
+						},
+						() => {
+							const distPath = path.resolve(__dirname, 'dist');
+							const expectedFiles = [
+								'extension.js',
+								'extension.js.map',
+								'worker2.js',
+								'worker2.js.map', 
+								'tikTokenizerWorker.js',
+								'tikTokenizerWorker.js.map',
+								'diffWorker.js',
+								'diffWorker.js.map',
+								'tfidfWorker.js',
+								'tfidfWorker.js.map',
+								'copilotDebugCommand.js',
+								'copilotDebugCommand.js.map'
+							];
+							
+							// Add each esbuild output file as a webpack asset
+							expectedFiles.forEach(file => {
+								const filePath = path.join(distPath, file);
+								if (fs.existsSync(filePath)) {
+									const content = fs.readFileSync(filePath);
+									// Use webpack's RawSource for proper asset handling
+									const RawSource = compiler.webpack.sources.RawSource;
+									compilation.emitAsset(file, new RawSource(content));
+									console.log(`Added ESBuild asset: ${file}`);
+								}
+							});
+						}
+					);
+				});
+				
+				// Clean up the dummy file
 				compiler.hooks.afterEmit.tap('CleanupDummyFile', () => {
 					const dummyFile = path.resolve(__dirname, 'dist', 'dummy.js');
 					if (fs.existsSync(dummyFile)) {
