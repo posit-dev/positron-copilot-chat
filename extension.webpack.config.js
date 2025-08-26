@@ -100,6 +100,9 @@ const config = {
 		filename: 'dummy.js', // Use a different filename to avoid conflicts
 		libraryTarget: 'commonjs2'
 	},
+	performance: {
+		hints: false // Disable performance warnings for large extension bundles
+	},
 	plugins: [
 		new ESBuildPlugin(),
 		// Add esbuild output files as webpack assets
