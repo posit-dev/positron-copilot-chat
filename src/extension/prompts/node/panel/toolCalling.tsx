@@ -227,6 +227,13 @@ class ToolResultElement extends PromptElement<ToolResultElementProps, void> {
 		);
 	}
 	private async sendToolCallTelemetry(invokeOutcome: ToolInvocationOutcome, validateOutcome: ToolValidationOutcome) {
+		// --- Start Positron ---
+		// Disable tool call telemetry entirely.
+		if (invokeOutcome) {
+			return;
+		}
+		// --- End Positron ---
+
 		const model = this.props.promptContext.request?.model && (await this.endpointProvider.getChatEndpoint(this.props.promptContext.request?.model)).model;
 		const toolName = this.props.toolCall.name;
 
