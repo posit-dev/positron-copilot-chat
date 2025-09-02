@@ -183,7 +183,12 @@ export class PromptFileContextContribution extends Disposable {
 	private async getCopilotApi(): Promise<Copilot.ContextProviderApiV1 | undefined> {
 		const copilotExtension = vscode.extensions.getExtension('GitHub.copilot');
 		if (copilotExtension === undefined) {
-			this.logService.error('Copilot extension not found');
+			// --- Start Positron ---
+			// Disable this error. The Copilot Chat extension is not open source
+			// and it is expected that it isn't available in Positron.
+			//
+			// this.logService.error('Copilot extension not found');
+			// --- End Positron ---
 			return undefined;
 		}
 		try {
