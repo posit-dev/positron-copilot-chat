@@ -9,6 +9,10 @@ import * as path from 'path';
 import { compressTikToken } from './build/compressTikToken';
 import { copyStaticAssets } from './build/copyStaticAssets';
 
+// --- Start Positron ---
+import { spawn } from 'child_process';
+// --- End Positron ---
+
 export interface ITreeSitterGrammar {
 	name: string;
 	/**
@@ -59,6 +63,30 @@ const treeSitterGrammars: ITreeSitterGrammar[] = [
 
 const REPO_ROOT = path.join(__dirname, '..');
 
+// --- Start Positron ---
+// Helper to perform an initial compilation task after installation
+async function runNpmCompile(): Promise<void> {
+	return new Promise((resolve, reject) => {
+		const npmProcess = spawn('npm', ['run', 'compile'], {
+			cwd: REPO_ROOT,
+			stdio: 'inherit'
+		});
+
+		npmProcess.on('close', (code) => {
+			if (code === 0) {
+				resolve();
+			} else {
+				reject(new Error(`npm run compile exited with code ${code}`));
+			}
+		});
+
+		npmProcess.on('error', (error) => {
+			reject(error);
+		});
+	});
+}
+// --- End Positron ---
+
 async function main() {
 	await fs.promises.mkdir(path.join(REPO_ROOT, '.build'), { recursive: true });
 
@@ -81,6 +109,11 @@ async function main() {
 	if (!fs.existsSync(baseCachePath)) {
 		throw new Error(`Base cache file does not exist at ${baseCachePath}. Please ensure that you have git lfs installed and initialized before the repository is cloned.`);
 	}
+
+	// --- Start Positron ---
+	// Perform an initial compilation task after installation
+	await runNpmCompile();
+	// --- End Positron ---
 }
 
 main();
