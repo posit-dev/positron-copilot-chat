@@ -29,10 +29,15 @@ export function getFileBasedAuthSession(): AuthenticationSession | undefined {
 			const xdgConfigHome = process.env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config');
 			configDir = path.join(xdgConfigHome, 'github-copilot');
 		}
-		const appsJsonPath = path.join(configDir, 'apps.json');
+		let appsJsonPath = path.join(configDir, 'apps.json');
 
 		if (!fs.existsSync(appsJsonPath)) {
-			return undefined;
+			// This file was called hosts.json in older Copilot SDK releases
+			appsJsonPath = path.join(configDir, 'hosts.json')
+			if (!fs.existsSync(appsJsonPath)) {
+				console.trace(`[Copilot] No file auth token 'apps.json' or 'hosts.json' found in ${configDir}`)
+				return undefined;
+			}
 		}
 
 		const appsData = JSON.parse(fs.readFileSync(appsJsonPath, 'utf-8'));
