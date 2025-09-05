@@ -84,7 +84,7 @@
 		"onFileSystem:ccreq",
 		"onFileSystem:ccsettings"
 	],
-	"main": "./dist/extension",
+	"main": "./dist/extension.js",
 	"l10n": "./l10n",
 	"enabledApiProposals": [
 		"extensionsAny",
