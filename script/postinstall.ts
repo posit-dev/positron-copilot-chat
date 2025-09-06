@@ -69,7 +69,8 @@ async function runNpmCompile(): Promise<void> {
 	return new Promise((resolve, reject) => {
 		const npmProcess = spawn('npm', ['run', 'compile'], {
 			cwd: REPO_ROOT,
-			stdio: 'inherit'
+			stdio: 'inherit',
+			shell: true
 		});
 
 		npmProcess.on('close', (code) => {
