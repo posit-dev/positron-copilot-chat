@@ -3495,6 +3495,9 @@
 	"extensionPack": [
 		"GitHub.copilot"
 	],
+	"extensionDependencies": [
+		"positron.positron-assistant"
+	],
 	"prettier": {
 		"useTabs": true,
 		"tabWidth": 4,
