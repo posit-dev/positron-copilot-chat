@@ -22,8 +22,8 @@ export function getFileBasedAuthSession(): AuthenticationSession | undefined {
 	try {
 		let configDir: string;
 		if (process.platform === 'win32') {
-			// On Windows, use %APPDATA%
-			configDir = path.join(process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Local'), 'github-copilot');
+			// On Windows, use %LOCALAPPDATA%
+			configDir = path.join(process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local'), 'github-copilot');
 		} else {
 			// On Unix-like systems, use XDG_CONFIG_HOME or ~/.config
 			const xdgConfigHome = process.env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config');
