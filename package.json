@@ -26,6 +26,7 @@
 		"npm": ">=9.0.0",
 		"node": ">=22.14.0"
 	},
+	"private": true,
 	"categories": [
 		"AI",
 		"Chat",
