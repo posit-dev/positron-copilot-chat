@@ -23,6 +23,19 @@ This is the **GitHub Copilot Chat** extension for Visual Studio Code - a VS Code
 - **Vitest**: Unit testing framework
 - **Python**: For notebooks integration and ML evaluation scripts
 
+## Validating changes
+
+You MUST check compilation output before running ANY script or declaring work complete!
+
+1. **ALWAYS** check the `start-watch-tasks` watch task output for compilation errors
+2. **NEVER** use the `compile` task as a way to check if everything is working properly
+3. **FIX** all compilation errors before moving forward
+
+### TypeScript compilation steps
+- Monitor the `start-watch-tasks` task outputs for real-time compilation errors as you make changes
+- This task runs `npm: watch:tsc-extension`,`npm: watch:tsc-extension-web`, `npm: watch:tsc-simulation-workbench`, and `npm: watch:esbuild` to incrementally compile the project
+- Start the task if it's not already running in the background
+
 ## Project Architecture
 
 ### Top-Level Directory Structure
@@ -319,3 +332,7 @@ The extension uses numerous proposed VS Code APIs for advanced functionality:
 - **Configuration**: Modify `package.json` contributions for VS Code integration
 
 This extension is a complex, multi-layered system that provides comprehensive AI assistance within VS Code. Understanding the service architecture, contribution system, and separation between platform and extension layers is crucial for making effective changes.
+
+## Best Practices
+- Use services and dependency injection whenever possible instead of using node or vscode APIs directly. For example, use `IFileService` instead of node's `fs`.
+- Always use the URI type instead of using string file paths. There are many helpers available for working with URIs.

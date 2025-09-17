@@ -24,6 +24,7 @@ import { URI } from '../../../util/vs/base/common/uri';
 import { IInstantiationService } from '../../../util/vs/platform/instantiation/common/instantiation';
 import { ContributionCollection, IExtensionContribution } from '../../common/contributions';
 import { vscodeNodeChatContributions } from '../../extension/vscode-node/contributions';
+import { IMergeConflictService } from '../../git/common/mergeConflictService';
 import { registerInlineChatCommands } from '../../inlineChat/vscode-node/inlineChatCommands';
 import { INewWorkspacePreviewContentManager } from '../../intents/node/newIntent';
 import { FindInFilesArgs } from '../../intents/node/searchIntent';
@@ -34,7 +35,6 @@ import { InlineCodeSymbolLinkifier } from '../../linkify/vscode-node/inlineCodeS
 import { NotebookCellLinkifier } from '../../linkify/vscode-node/notebookCellLinkifier';
 import { SymbolLinkifier } from '../../linkify/vscode-node/symbolLinkifier';
 import { IntentDetector } from '../../prompt/node/intentDetector';
-import { ContributedToolName } from '../../tools/common/toolNames';
 import { SemanticSearchTextSearchProvider } from '../../workspaceSemanticSearch/node/semanticSearchTextSearchProvider';
 import { GitHubPullRequestProviders } from '../node/githubPullRequestProviders';
 import { startFeedbackCollection } from './feedbackCollection';
@@ -74,6 +74,7 @@ export class ConversationFeature implements IExtensionContribution {
 		@ICombinedEmbeddingIndex private readonly embeddingIndex: ICombinedEmbeddingIndex,
 		@IDevContainerConfigurationService private readonly devContainerConfigurationService: IDevContainerConfigurationService,
 		@IGitCommitMessageService private readonly gitCommitMessageService: IGitCommitMessageService,
+		@IMergeConflictService private readonly mergeConflictService: IMergeConflictService,
 		@ILinkifyService private readonly linkifyService: ILinkifyService,
 		@IVSCodeExtensionContext private readonly extensionContext: IVSCodeExtensionContext,
 		@INewWorkspacePreviewContentManager private readonly newWorkspacePreviewContentManager: INewWorkspacePreviewContentManager,
@@ -210,9 +211,6 @@ export class ConversationFeature implements IExtensionContribution {
 			vscode.commands.registerCommand('github.copilot.interactiveSession.feedback', async () => {
 				return vscode.env.openExternal(vscode.Uri.parse(FEEDBACK_URL));
 			}),
-			vscode.commands.registerCommand('github.copilot.terminal.explainTerminalSelection', async () => this.triggerTerminalChat({ query: `/${TerminalExplainIntent.intentName} #terminalSelection` })),
-			// This command is an alias to use a different title in the context menu
-			vscode.commands.registerCommand('github.copilot.terminal.explainTerminalSelectionContextMenu', () => vscode.commands.executeCommand('github.copilot.terminal.explainTerminalSelection')),
 			vscode.commands.registerCommand('github.copilot.terminal.explainTerminalLastCommand', async () => this.triggerTerminalChat({ query: `/${TerminalExplainIntent.intentName} #terminalLastCommand` })),
 			vscode.commands.registerCommand('github.copilot.terminal.fixTerminalLastCommand', async () => generateTerminalFixes(this.instantiationService)),
 			vscode.commands.registerCommand('github.copilot.terminal.generateCommitMessage', async () => {
@@ -239,12 +237,6 @@ export class ConversationFeature implements IExtensionContribution {
 					vscode.window.activeTerminal?.sendText(message, false);
 				}
 			}),
-			vscode.commands.registerCommand('github.copilot.terminal.attachTerminalSelection', async () => {
-				await vscode.commands.executeCommand('workbench.action.chat.open', {
-					toolIds: [ContributedToolName.TerminalSelection],
-					isPartialQuery: true
-				});
-			}),
 			vscode.commands.registerCommand('github.copilot.git.generateCommitMessage', async (rootUri: vscode.Uri | undefined, _: vscode.SourceControlInputBoxValueProviderContext[], cancellationToken: vscode.CancellationToken | undefined) => {
 				const repository = this.gitCommitMessageService.getRepository(rootUri);
 				if (!repository) {
@@ -255,6 +247,9 @@ export class ConversationFeature implements IExtensionContribution {
 				if (commitMessage) {
 					repository.inputBox.value = commitMessage;
 				}
+			}),
+			vscode.commands.registerCommand('github.copilot.git.resolveMergeConflicts', async (...resourceStates: vscode.SourceControlResourceState[]) => {
+				await this.mergeConflictService.resolveMergeConflicts(resourceStates.map(r => r.resourceUri), undefined);
 			}),
 			vscode.commands.registerCommand('github.copilot.devcontainer.generateDevContainerConfig', async (args: DevContainerConfigGeneratorArguments, cancellationToken = new vscode.CancellationTokenSource().token) => {
 				return this.devContainerConfigurationService.generateConfiguration(args, cancellationToken);

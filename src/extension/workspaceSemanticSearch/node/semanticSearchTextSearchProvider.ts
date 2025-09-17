@@ -158,6 +158,7 @@ export class SemanticSearchTextSearchProvider implements vscode.AITextSearchProv
 				{
 					endpoint: await this.getEndpoint(),
 					tokenBudget: MAX_CHUNK_TOKEN_COUNT,
+					fullWorkspaceTokenBudget: MAX_CHUNK_TOKEN_COUNT,
 					maxResults: MAX_CHUNKS_RESULTS,
 				},
 				{
@@ -232,7 +233,6 @@ export class SemanticSearchTextSearchProvider implements vscode.AITextSearchProv
 						messageId: generateUuid(),
 						messageSource: 'search.workspace'
 					},
-					{ intent: true }
 				);
 				SemanticSearchTextSearchProvider.feedBackTelemetry.llmFilteringDuration = Date.now() - llmFilteringDuration;
 				searchResult = fetchResult.type === 'success' ? fetchResult.value : (fetchResult.type === 'length' ? fetchResult.truncatedValue : '');
@@ -481,7 +481,6 @@ export class SemanticSearchTextSearchProvider implements vscode.AITextSearchProv
 					messageId: generateUuid(),
 					messageSource: 'search.keywords'
 				},
-				{ intent: true }
 			);
 			const keywordResult = fetchResult.type === 'success' ? fetchResult.value : (fetchResult.type === 'length' ? fetchResult.truncatedValue : '');
 			const usedResults = [];

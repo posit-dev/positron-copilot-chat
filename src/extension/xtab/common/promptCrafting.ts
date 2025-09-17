@@ -7,10 +7,10 @@ import { DocumentId } from '../../../platform/inlineEdits/common/dataTypes/docum
 import { RootedEdit } from '../../../platform/inlineEdits/common/dataTypes/edit';
 import { LanguageContextResponse } from '../../../platform/inlineEdits/common/dataTypes/languageContext';
 import { CurrentFileOptions, DiffHistoryOptions, PromptingStrategy, PromptOptions } from '../../../platform/inlineEdits/common/dataTypes/xtabPromptOptions';
-import { StatelessNextEditRequest } from '../../../platform/inlineEdits/common/statelessNextEditProvider';
+import { StatelessNextEditDocument } from '../../../platform/inlineEdits/common/statelessNextEditProvider';
 import { IXtabHistoryEditEntry, IXtabHistoryEntry } from '../../../platform/inlineEdits/common/workspaceEditTracker/nesXtabHistoryTracker';
-import { ContextKind } from '../../../platform/languageServer/common/languageContextService';
-import { range } from '../../../util/vs/base/common/arrays';
+import { ContextKind, TraitContext } from '../../../platform/languageServer/common/languageContextService';
+import { pushMany, range } from '../../../util/vs/base/common/arrays';
 import { illegalArgument } from '../../../util/vs/base/common/errors';
 import { Schemas } from '../../../util/vs/base/common/network';
 import { OffsetRange } from '../../../util/vs/editor/common/core/ranges/offsetRange';
@@ -131,15 +131,15 @@ export const simplifiedPrompt = 'Predict next code edit based on the context giv
 
 export const xtab275SystemPrompt = `Predict the next code edit based on user context, following Microsoft content policies and avoiding copyright violations. If a request may breach guidelines, reply: "Sorry, I can't assist with that."`;
 
-export function getUserPrompt(request: StatelessNextEditRequest, currentFileContent: string, areaAroundCodeToEdit: string, langCtx: LanguageContextResponse | undefined, computeTokens: (s: string) => number, opts: PromptOptions): string {
+export function getUserPrompt(activeDoc: StatelessNextEditDocument, xtabHistory: readonly IXtabHistoryEntry[], currentFileContent: string, areaAroundCodeToEdit: string, langCtx: LanguageContextResponse | undefined, computeTokens: (s: string) => number, opts: PromptOptions): string {
 
-	const activeDoc = request.getActiveDocument();
-
-	const { codeSnippets: recentlyViewedCodeSnippets, documents: docsInPrompt } = getRecentCodeSnippets(request, langCtx, computeTokens, opts);
+	const { codeSnippets: recentlyViewedCodeSnippets, documents: docsInPrompt } = getRecentCodeSnippets(activeDoc, xtabHistory, langCtx, computeTokens, opts);
 
 	docsInPrompt.add(activeDoc.id); // Add active document to the set of documents in prompt
 
-	const editDiffHistory = getEditDiffHistory(request, docsInPrompt, computeTokens, opts.diffHistory);
+	const editDiffHistory = getEditDiffHistory(activeDoc, xtabHistory, docsInPrompt, computeTokens, opts.diffHistory);
+
+	const relatedInformation = getRelatedInformation(langCtx);
 
 	const currentFilePath = toUniquePath(activeDoc.id, activeDoc.workspaceRoot?.path);
 
@@ -162,7 +162,7 @@ ${areaAroundCodeToEdit}`;
 
 	const includeBackticks = opts.promptingStrategy !== PromptingStrategy.Nes41Miniv3 && opts.promptingStrategy !== PromptingStrategy.Codexv21NesUnified;
 
-	const prompt = (includeBackticks ? wrapInBackticks(mainPrompt) : mainPrompt) + postScript;
+	const prompt = relatedInformation + (includeBackticks ? wrapInBackticks(mainPrompt) : mainPrompt) + postScript;
 
 	const trimmedPrompt = prompt.trim();
 
@@ -203,20 +203,45 @@ they would have made next. Provide the revised code that was between the \`${COD
 	return formattedPostScript;
 }
 
+function getRelatedInformation(langCtx: LanguageContextResponse | undefined): string {
+	if (langCtx === undefined) {
+		return '';
+	}
+
+	const traits = langCtx.items
+		.filter(ctx => ctx.context.kind === ContextKind.Trait)
+		.filter(t => !t.onTimeout)
+		.map(t => t.context) as TraitContext[];
+
+	if (traits.length === 0) {
+		return '';
+	}
+
+	const relatedInformation: string[] = [];
+	for (const trait of traits) {
+		relatedInformation.push(`${trait.name}: ${trait.value}`);
+	}
+
+	return `Consider this related information:\n${relatedInformation.join('\n')}\n\n`;
+}
+
 function getEditDiffHistory(
-	request: StatelessNextEditRequest,
+	activeDoc: StatelessNextEditDocument,
+	xtabHistory: readonly IXtabHistoryEntry[],
 	docsInPrompt: Set<DocumentId>,
 	computeTokens: (s: string) => number,
 	{ onlyForDocsInPrompt, maxTokens, nEntries, useRelativePaths }: DiffHistoryOptions
 ) {
-	const workspacePath = useRelativePaths ? request.getActiveDocument().workspaceRoot?.path : undefined;
+	const workspacePath = useRelativePaths ? activeDoc.workspaceRoot?.path : undefined;
+
+	const reversedHistory = xtabHistory.slice().reverse();
 
 	let tokenBudget = maxTokens;
 
 	const allDiffs: string[] = [];
 
 	// we traverse in reverse (ie from most recent to least recent) because we may terminate early due to token-budget overflow
-	for (const entry of request.xtabEditHistory.reverse()) {
+	for (const entry of reversedHistory) {
 		if (allDiffs.length >= nEntries) { // we've reached the maximum number of entries
 			break;
 		}
@@ -262,7 +287,7 @@ function generateDocDiff(entry: IXtabHistoryEditEntry, workspacePath: string | u
 
 	const lineEdit = RootedEdit.toLineEdit(entry.edit);
 
-	for (const singleLineEdit of lineEdit.edits) {
+	for (const singleLineEdit of lineEdit.replacements) {
 		const oldLines = entry.edit.base.getLines().slice(singleLineEdit.lineRange.startLineNumber - 1, singleLineEdit.lineRange.endLineNumberExclusive - 1);
 		const newLines = singleLineEdit.newLines;
 
@@ -274,8 +299,8 @@ function generateDocDiff(entry: IXtabHistoryEditEntry, workspacePath: string | u
 		const startLineNumber = singleLineEdit.lineRange.startLineNumber - 1;
 
 		docDiffLines.push(`@@ -${startLineNumber},${oldLines.length} +${startLineNumber},${newLines.length} @@`);
-		docDiffLines.push(...oldLines.map(x => `-${x}`));
-		docDiffLines.push(...newLines.map(x => `+${x}`));
+		pushMany(docDiffLines, oldLines.map(x => `-${x}`));
+		pushMany(docDiffLines, newLines.map(x => `+${x}`));
 	}
 
 	if (docDiffLines.length === 0) {
@@ -284,11 +309,14 @@ function generateDocDiff(entry: IXtabHistoryEditEntry, workspacePath: string | u
 
 	const uniquePath = toUniquePath(entry.docId, workspacePath);
 
-	const docDiff = [
+	const docDiffArr = [
 		`--- ${uniquePath}`,
 		`+++ ${uniquePath}`,
-		...docDiffLines
-	].join('\n');
+	];
+
+	pushMany(docDiffArr, docDiffLines);
+
+	const docDiff = docDiffArr.join('\n');
 
 	return docDiff;
 }
@@ -320,7 +348,8 @@ function formatCodeSnippet(
 }
 
 function getRecentCodeSnippets(
-	request: StatelessNextEditRequest,
+	activeDoc: StatelessNextEditDocument,
+	xtabHistory: readonly IXtabHistoryEntry[],
 	langCtx: LanguageContextResponse | undefined,
 	computeTokens: (code: string) => number,
 	opts: PromptOptions,
@@ -331,13 +360,11 @@ function getRecentCodeSnippets(
 
 	const { includeViewedFiles, nDocuments } = opts.recentlyViewedDocuments;
 
-	const activeDoc = request.getActiveDocument();
-
 	// get last documents besides active document
 	// enforces the option to include/exclude viewed files
 	const docsBesidesActiveDoc: IXtabHistoryEntry[] = []; // from most to least recent
-	for (let i = request.xtabEditHistory.length - 1, seenDocuments = new Set<DocumentId>(); i >= 0; --i) {
-		const entry = request.xtabEditHistory[i];
+	for (let i = xtabHistory.length - 1, seenDocuments = new Set<DocumentId>(); i >= 0; --i) {
+		const entry = xtabHistory[i];
 
 		if (!includeViewedFiles && entry.kind === 'visibleRanges') {
 			continue;
