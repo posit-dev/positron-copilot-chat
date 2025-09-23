@@ -3118,7 +3118,7 @@
 			"scm/inputBox": [
 				{
 					"command": "github.copilot.git.generateCommitMessage",
-					"when": "scmProvider == git"
+					"when": "scmProvider == git && github.copilot-chat.activated && (!config.positron.assistant.enable || !config.positron.assistant.gitIntegration.enable)"
 				}
 			],
 			"testing/message/context": [
