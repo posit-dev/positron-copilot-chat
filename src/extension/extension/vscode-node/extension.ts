@@ -20,6 +20,11 @@ import { registerServices } from './services';
 //#region TODO@bpasero this needs cleanup
 import '../../intents/node/allIntents';
 
+// --- Start Positron ---
+import * as vscode from 'vscode';
+import { getFileBasedAuthSession } from '../../../platform/authentication/vscode-node/fileBasedAuth.js';
+// --- End Positron ---
+
 function configureDevPackages() {
 	try {
 		const sourceMapSupport = require('source-map-support');
@@ -33,6 +38,40 @@ function configureDevPackages() {
 //#endregion
 
 export function activate(context: ExtensionContext, forceActivation?: boolean) {
+
+	// --- Start Positron ---
+	// Don't enable the extension when Assistant is disabled
+	const enabled =
+		vscode.workspace.getConfiguration('positron.assistant').get('enable');
+	if (!enabled) {
+		console.log(`[Copilot Chat] Disabling since Assistant is disabled`);
+		return;
+	}
+
+	// Don't perform activation if we have no auth session; the original
+	// extension has an "installed but not signed in" state, but we don't
+	// support that in Positron.
+	const authSession = getFileBasedAuthSession();
+	if (!authSession) {
+		// There's no auth session yet, but we don't want to require a restart
+		// when one is established. Listen for a Copilot auth session to be
+		// established.
+		console.log(`[Copilot Chat] No auth session found, extension will not activate until sign-in`);
+		const api = vscode.extensions.getExtension('positron.positron-assistant')?.exports;
+		if (api) {
+			api.onProviderSignIn((provider: string) => {
+				if (provider === 'copilot') {
+					console.info('[Copilot Chat] Detected Copilot sign-in, activating extension');
+					activate(context, forceActivation);
+				}
+			});
+		} else {
+			console.error('[Copilot Chat] Failed to get Positron API');
+		}
+		return;
+	}
+	// --- End Positron ---
+
 	return baseActivate({
 		context,
 		registerServices,
