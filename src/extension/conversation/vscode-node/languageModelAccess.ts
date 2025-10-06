@@ -407,6 +407,18 @@ export class CopilotLanguageModelWrapper extends Disposable {
 				tokenLimit
 			}
 		);
+
+		// --- Start Positron ---
+		// Calculate usage in Positron token counting format
+		const usage = {
+			inputTokens: (result.usage?.prompt_tokens ?? 0) - (result.usage?.prompt_tokens_details.cached_tokens ?? 0),
+			outputTokens: result.usage?.completion_tokens ?? 0,
+			cachedTokens: result.usage?.prompt_tokens_details.cached_tokens ?? 0,
+			providerMetadata: result.usage,
+		};
+		this._logService.info(`[LanguageModelAccess] Usage for extension ${extensionId}: ${JSON.stringify(usage)}`);
+		callback('', 0, { text: '', usage });
+		// --- End Positron ---
 	}
 
 	async provideLanguageModelResponse(endpoint: IChatEndpoint, messages: Array<vscode.LanguageModelChatMessage | vscode.LanguageModelChatMessage2>, options: vscode.LanguageModelChatRequestOptions, extensionId: string, progress: vscode.Progress<vscode.ChatResponseFragment2>, token: vscode.CancellationToken): Promise<any> {
@@ -431,6 +443,13 @@ export class CopilotLanguageModelWrapper extends Disposable {
 				// @karthiknadig: remove this when LM API becomes available
 				this._thinkingDataService.update(index, delta.thinking);
 			}
+			// --- Start Positron ---
+			if (delta.usage) {
+				// Report usage as part of the output stream for the consuming extension
+				const part: any = vscode.LanguageModelDataPart.json({ type: 'usage', data: delta.usage });
+				progress.report({ index, part: part });
+			}
+			// --- End Positon ---
 			return undefined;
 		};
 		return this._provideLanguageModelResponse(endpoint, messages, options, extensionId, finishCallback, token);

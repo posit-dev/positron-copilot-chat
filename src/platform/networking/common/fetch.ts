@@ -148,6 +148,14 @@ export interface IResponseDelta {
 	copilotConfirmation?: ICopilotConfirmation;
 	thinking?: ThinkingDelta;
 	retryReason?: FilterReason;
+	// --- Start Positron ---
+	usage?: {
+		inputTokens: number;
+		outputTokens: number;
+		cachedTokens: number;
+		providerMetadata?: any;
+	};
+	// --- End Positron ---
 }
 
 export interface FinishedCallback {
