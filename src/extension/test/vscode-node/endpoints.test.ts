@@ -6,8 +6,8 @@
 import assert from 'assert';
 import { SinonSandbox, createSandbox } from 'sinon';
 import { LanguageModelChat } from 'vscode';
-import { CHAT_MODEL, EMBEDDING_MODEL } from '../../../platform/configuration/common/configurationService';
-import { IChatModelInformation, IEmbeddingModelInformation } from '../../../platform/endpoint/common/endpointProvider';
+import { CHAT_MODEL } from '../../../platform/configuration/common/configurationService';
+import { IChatModelInformation, ICompletionModelInformation } from '../../../platform/endpoint/common/endpointProvider';
 import { IModelMetadataFetcher } from '../../../platform/endpoint/node/modelMetadataFetcher';
 import { ITestingServicesAccessor } from '../../../platform/test/node/services';
 import { TokenizerType } from '../../../util/common/tokenizer';
@@ -19,6 +19,9 @@ import { createExtensionTestingServices } from './services';
 class FakeModelMetadataFetcher implements IModelMetadataFetcher {
 	public onDidModelsRefresh = Event.None;
 	async getAllChatModels(): Promise<IChatModelInformation[]> {
+		return [];
+	}
+	async getAllCompletionModels(forceRefresh: boolean): Promise<ICompletionModelInformation[]> {
 		return [];
 	}
 	async getChatModelFromApiModel(model: LanguageModelChat): Promise<IChatModelInformation | undefined> {
@@ -40,22 +43,6 @@ class FakeModelMetadataFetcher implements IModelMetadataFetcher {
 			}
 		};
 	}
-	async getEmbeddingsModel(family: 'text-embedding-3-small'): Promise<IEmbeddingModelInformation> {
-		return {
-			id: EMBEDDING_MODEL.TEXT3SMALL,
-			model_picker_enabled: false,
-			is_chat_default: false,
-			is_chat_fallback: false,
-			name: 'fake-name',
-			version: 'fake-version',
-			capabilities: {
-				type: 'embeddings',
-				tokenizer: TokenizerType.CL100K,
-				family: 'fake-family'
-			}
-		};
-	}
-
 }
 
 suite('Endpoint Class Test', function () {

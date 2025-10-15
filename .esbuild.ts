@@ -48,7 +48,7 @@ const baseNodeBuildOptions = {
 	mainFields: ["module", "main"], // needed for jsonc-parser,
 	define: {
 		'process.env.APPLICATIONINSIGHTS_CONFIGURATION_CONTENT': '"{}"'
-	}
+	},
 } satisfies esbuild.BuildOptions;
 
 const nodeExtHostTestGlobs = [
@@ -68,7 +68,7 @@ const testBundlePlugin: esbuild.Plugin = {
 			return { path: path.resolve(args.path) };
 		});
 		build.onLoad({ filter: /[\/\\]test-extension\.ts$/ }, async args => {
-			let files = await glob(nodeExtHostTestGlobs, { cwd: REPO_ROOT, posix: true });
+			let files = await glob(nodeExtHostTestGlobs, { cwd: REPO_ROOT, posix: true, ignore: ['src/extension/completions-core/**/*'] });
 			files = files.map(f => path.posix.relative('src', f));
 			if (files.length === 0) {
 				throw new Error('No extension tests found');
@@ -98,7 +98,7 @@ const sanityTestBundlePlugin: esbuild.Plugin = {
 			return { path: path.resolve(args.path) };
 		});
 		build.onLoad({ filter: /[\/\\]sanity-test-extension\.ts$/ }, async args => {
-			let files = await glob(nodeExtHostSanityTestGlobs, { cwd: REPO_ROOT, posix: true });
+			let files = await glob(nodeExtHostSanityTestGlobs, { cwd: REPO_ROOT, posix: true, ignore: ['src/extension/completions-core/**/*'] });
 			files = files.map(f => path.posix.relative('src', f));
 			if (files.length === 0) {
 				throw new Error('No extension tests found');
@@ -109,6 +109,23 @@ const sanityTestBundlePlugin: esbuild.Plugin = {
 					.join(''),
 				watchDirs: files.map(path.dirname),
 				watchFiles: files,
+			};
+		});
+	}
+};
+
+const importMetaPlugin: esbuild.Plugin = {
+	name: 'claudeCodeImportMetaPlugin',
+	setup(build) {
+		// Handle import.meta.url in @anthropic-ai/claude-code package
+		build.onLoad({ filter: /node_modules[\/\\]@anthropic-ai[\/\\]claude-code[\/\\].*\.mjs$/ }, async (args) => {
+			const contents = await fs.promises.readFile(args.path, 'utf8');
+			return {
+				contents: contents.replace(
+					/import\.meta\.url/g,
+					'require("url").pathToFileURL(__filename).href'
+				),
+				loader: 'js'
 			};
 		});
 	}
@@ -160,7 +177,7 @@ const nodeExtHostBuildOptions = {
 		{ in: './src/sanity-test-extension.ts', out: 'sanity-test-extension' },
 	],
 	loader: { '.ps1': 'text' },
-	plugins: [testBundlePlugin, sanityTestBundlePlugin],
+	plugins: [testBundlePlugin, sanityTestBundlePlugin, importMetaPlugin],
 	external: [
 		...baseNodeBuildOptions.external,
 		'vscode'
@@ -221,7 +238,7 @@ const nodeSimulationWorkbenchUIBuildOptions = {
 		'child_process',
 		'http',
 		'assert',
-	]
+	],
 } satisfies esbuild.BuildOptions;
 
 async function typeScriptServerPluginPackageJsonInstall(): Promise<void> {
@@ -326,6 +343,7 @@ async function main() {
 				`**/*.w.json`,
 				'**/*.sqlite',
 				'**/*.sqlite-journal',
+				'test/aml/out/**'
 			]
 		});
 		rebuild();

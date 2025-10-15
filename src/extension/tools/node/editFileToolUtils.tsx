@@ -3,15 +3,26 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import type { LanguageModelChat } from 'vscode';
+import { t } from '@vscode/l10n';
+import { realpath } from 'fs/promises';
+import { homedir } from 'os';
+import type { LanguageModelChat, PreparedToolInvocation } from 'vscode';
+import { IConfigurationService } from '../../../platform/configuration/common/configurationService';
+import { ICustomInstructionsService } from '../../../platform/customInstructions/common/customInstructionsService';
 import { OffsetLineColumnConverter } from '../../../platform/editing/common/offsetLineColumnConverter';
 import { TextDocumentSnapshot } from '../../../platform/editing/common/textDocumentSnapshot';
 import { IAlternativeNotebookContentService } from '../../../platform/notebook/common/alternativeContent';
 import { INotebookService } from '../../../platform/notebook/common/notebookService';
 import { IWorkspaceService } from '../../../platform/workspace/common/workspaceService';
+import * as glob from '../../../util/vs/base/common/glob';
+import { ResourceMap } from '../../../util/vs/base/common/map';
+import { Schemas } from '../../../util/vs/base/common/network';
+import { isWindows } from '../../../util/vs/base/common/platform';
+import { normalizePath, relativePath } from '../../../util/vs/base/common/resources';
 import { URI } from '../../../util/vs/base/common/uri';
 import { Position as EditorPosition } from '../../../util/vs/editor/common/core/position';
-import { EndOfLine, Position, Range, WorkspaceEdit } from '../../../vscodeTypes';
+import { ServicesAccessor } from '../../../util/vs/platform/instantiation/common/instantiation';
+import { EndOfLine, MarkdownString, Position, Range, TextEdit } from '../../../vscodeTypes';
 
 // Simplified Hunk type for the patch
 interface Hunk {
@@ -392,15 +403,15 @@ export async function applyEdit(
 	uri: URI,
 	old_string: string,
 	new_string: string,
-	workspaceEdit: WorkspaceEdit,
 	workspaceService: IWorkspaceService,
 	notebookService: INotebookService,
 	alternativeNotebookContent: IAlternativeNotebookContentService,
 	languageModel: LanguageModelChat | undefined
 
-): Promise<{ patch: Hunk[]; updatedFile: string }> {
+): Promise<{ patch: Hunk[]; updatedFile: string; edits: TextEdit[] }> {
 	let originalFile: string;
 	let updatedFile: string;
+	const edits: TextEdit[] = [];
 	const filePath = uri.toString();
 
 	try {
@@ -421,7 +432,7 @@ export async function applyEdit(
 			}
 			// Create new file case
 			updatedFile = new_string;
-			workspaceEdit.insert(uri, new Position(0, 0), new_string);
+			edits.push(TextEdit.insert(new Position(0, 0), new_string));
 		} else {
 			// Edit existing file case
 			if (new_string === '') {
@@ -435,7 +446,7 @@ export async function applyEdit(
 						if (result.editPosition.length) {
 							const [start, end] = result.editPosition[0];
 							const range = new Range(document.positionAt(start), document.positionAt(end));
-							workspaceEdit.delete(uri, range);
+							edits.push(TextEdit.delete(range));
 						}
 					} else {
 						const suggestion = result?.suggestion || 'The string to replace must match exactly.';
@@ -456,7 +467,7 @@ export async function applyEdit(
 					if (result.editPosition.length) {
 						const [start, end] = result.editPosition[0];
 						const range = new Range(document.positionAt(start), document.positionAt(end));
-						workspaceEdit.delete(uri, range);
+						edits.push(TextEdit.delete(range));
 					}
 				}
 			} else {
@@ -481,7 +492,7 @@ export async function applyEdit(
 					if (result.editPosition.length) {
 						const [start, end] = result.editPosition[0];
 						const range = new Range(document.positionAt(start), document.positionAt(end));
-						workspaceEdit.replace(uri, range, new_string);
+						edits.push(TextEdit.replace(range, new_string));
 					}
 
 					// If we used similarity matching, add a warning
@@ -506,7 +517,7 @@ export async function applyEdit(
 			newStr: updatedFile,
 		});
 
-		return { patch, updatedFile };
+		return { patch, updatedFile, edits };
 	} catch (error) {
 		// If the file doesn't exist and we're creating a new file with empty oldString
 		if (old_string === '' && error.code === 'ENOENT') {
@@ -519,7 +530,8 @@ export async function applyEdit(
 				newStr: updatedFile,
 			});
 
-			return { patch, updatedFile };
+			edits.push(TextEdit.insert(new Position(0, 0), new_string));
+			return { patch, updatedFile, edits };
 		}
 
 		if (error instanceof EditError) {
@@ -528,4 +540,119 @@ export async function applyEdit(
 			throw new EditError(`Failed to edit file: ${error.message}`, 'unknownError');
 		}
 	}
+}
+
+const ALWAYS_CHECKED_EDIT_PATTERNS: Readonly<Record<string, boolean>> = {
+	'**/.vscode/*.json': false,
+};
+
+// Path prefixes under which confirmation is unconditionally required
+const platformConfirmationRequiredPaths = (
+	isWindows
+		? [process.env.APPDATA + '/**', process.env.LOCALAPPDATA + '/**', homedir() + '/.*', homedir() + '/.*/**']
+		: [homedir() + '/.*', homedir() + '/.*/**']
+).map(p => glob.parse(p));
+
+const enum ConfirmationCheckResult {
+	NoConfirmation,
+	Sensitive,
+	SystemFile,
+	OutsideWorkspace
+}
+
+/**
+ * Returns a function that returns whether a URI is approved for editing without
+ * further user confirmation.
+ */
+function makeUriConfirmationChecker(configuration: IConfigurationService, workspaceService: IWorkspaceService, customInstructionsService: ICustomInstructionsService) {
+	const patterns = configuration.getNonExtensionConfig<Record<string, boolean>>('chat.tools.edits.autoApprove');
+
+	const checks = new ResourceMap<{ pattern: glob.ParsedPattern; isApproved: boolean }[]>();
+	const getPatterns = (wf: URI) => {
+		let arr = checks.get(wf);
+		if (arr) {
+			return arr;
+		}
+
+		arr = [];
+		for (const obj of [patterns, ALWAYS_CHECKED_EDIT_PATTERNS]) {
+			if (obj) {
+				for (const [pattern, isApproved] of Object.entries(obj)) {
+					arr.push({ pattern: glob.parse({ base: wf.fsPath, pattern }), isApproved });
+				}
+			}
+		}
+
+		checks.set(wf, arr);
+		return arr;
+	};
+
+	function checkUri(uri: URI) {
+		const workspaceFolder = workspaceService.getWorkspaceFolder(uri);
+		if (!workspaceFolder && !customInstructionsService.isExternalInstructionsFile(uri)) {
+			return ConfirmationCheckResult.OutsideWorkspace;
+		}
+
+		let ok = true;
+		const fsPath = uri.fsPath;
+
+		if (platformConfirmationRequiredPaths.some(p => p(fsPath))) {
+			return ConfirmationCheckResult.SystemFile;
+		}
+
+		for (const { pattern, isApproved } of getPatterns(workspaceFolder || URI.file('/'))) {
+			if (isApproved !== ok && pattern(fsPath)) {
+				ok = isApproved;
+			}
+		}
+
+		return ok ? ConfirmationCheckResult.NoConfirmation : ConfirmationCheckResult.Sensitive;
+	}
+
+	return async (uri: URI) => {
+		const toCheck = [normalizePath(uri)];
+		if (uri.scheme === Schemas.file) {
+			try {
+				const linked = await realpath(uri.fsPath);
+				if (linked !== uri.fsPath) {
+					toCheck.push(URI.file(linked));
+				}
+			} catch (e) {
+				// Usually EPERM or ENOENT on the linkedFile
+			}
+		}
+
+		return Math.max(...toCheck.map(checkUri));
+	};
+}
+
+export async function createEditConfirmation(accessor: ServicesAccessor, uris: readonly URI[], asString: () => string): Promise<PreparedToolInvocation> {
+	const checker = makeUriConfirmationChecker(accessor.get(IConfigurationService), accessor.get(IWorkspaceService), accessor.get(ICustomInstructionsService));
+	const workspaceService = accessor.get(IWorkspaceService);
+	const needsConfirmation = (await Promise.all(uris
+		.map(async uri => ({ uri, reason: await checker(uri) }))
+	)).filter(r => r.reason !== ConfirmationCheckResult.NoConfirmation);
+
+	if (!needsConfirmation.length) {
+		return { presentation: 'hidden' };
+	}
+
+	const fileParts = needsConfirmation.map(({ uri }) => {
+		const wf = workspaceService.getWorkspaceFolder(uri);
+		return '`' + (wf ? relativePath(wf, uri) : uri.fsPath) + '`';
+	}).join(', ');
+
+	return {
+		confirmationMessages: {
+			title: t('Allow edits to sensitive files?'),
+			message: new MarkdownString(
+				(needsConfirmation.some(r => r.reason === ConfirmationCheckResult.Sensitive)
+					? t`The model wants to edit sensitive files (${fileParts}).`
+					: needsConfirmation.some(r => r.reason === ConfirmationCheckResult.OutsideWorkspace)
+						? t`The model wants to edit files outside of your workspace (${fileParts}).`
+						: t`The model wants to edit system files (${fileParts}).`)
+				+ ' ' + t`Do you want to allow this?` + '\n\n' + asString()
+			),
+		}
+	};
 }

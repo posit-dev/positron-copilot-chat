@@ -3,7 +3,7 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import type { ChatResponseClearToPreviousToolInvocationReason, ChatResponsePart, ChatResponseStream, ChatVulnerability, Uri } from 'vscode';
+import type { ChatResponseClearToPreviousToolInvocationReason, ChatResponsePart, ChatResponseStream, ChatVulnerability, ThinkingDelta, Uri } from 'vscode';
 
 import { createFilepathRegexp, mdCodeBlockLangToLanguageId } from '../../../util/common/markdown';
 import { CharCode } from '../../../util/vs/base/common/charCode';
@@ -73,6 +73,11 @@ export class CodeBlockTrackingChatResponseStream implements ChatResponseStream {
 
 	markdownWithVulnerabilities(value: string | MarkdownString, vulnerabilities: ChatVulnerability[]): void {
 		this._codeBlockProcessor.processMarkdown(value, vulnerabilities);
+	}
+
+	thinkingProgress(thinkingDelta: ThinkingDelta): void {
+		this._codeBlockProcessor.flush();
+		this._wrapped.thinkingProgress(thinkingDelta);
 	}
 
 	codeblockUri(uri: Uri): void {
