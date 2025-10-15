@@ -8,7 +8,11 @@
 // import { downloadZMQ } from '@vscode/zeromq';
 let downloadZMQ: (() => Promise<void>) | undefined;
 try {
-	downloadZMQ = require('@vscode/zeromq').downloadZMQ;
+	// Check if the package exists before trying to require it
+	const zeromqPath = require.resolve('@vscode/zeromq');
+	if (zeromqPath) {
+		downloadZMQ = require('@vscode/zeromq').downloadZMQ;
+	}
 } catch (e) {
 	// @vscode/zeromq not available, skip ZMQ download
 	downloadZMQ = undefined;
