@@ -3,7 +3,18 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import { downloadZMQ } from '@vscode/zeromq';
+// --- Start Positron ---
+// zeromq dependency removed - tests that depend on it will be skipped
+// import { downloadZMQ } from '@vscode/zeromq';
+let downloadZMQ: (() => Promise<void>) | undefined;
+try {
+	downloadZMQ = require('@vscode/zeromq').downloadZMQ;
+} catch (e) {
+	// @vscode/zeromq not available, skip ZMQ download
+	downloadZMQ = undefined;
+}
+// --- End Positron ---
+
 import * as fs from 'fs';
 import * as path from 'path';
 import { compressTikToken } from './build/compressTikToken';
@@ -106,7 +117,11 @@ async function main() {
 		'node_modules/@vscode/tree-sitter-wasm/wasm/tree-sitter.wasm',
 	], 'dist');
 
-	await downloadZMQ();
+	if (downloadZMQ) {
+		await downloadZMQ();
+	} else {
+		console.log('Skipping ZMQ download - zeromq dependency not available (tests requiring zeromq will be skipped)');
+	}
 
 	// Check if the base cache file exists
 	const baseCachePath = path.join('test', 'simulation', 'cache', 'base.sqlite');
