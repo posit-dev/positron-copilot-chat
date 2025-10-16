@@ -512,7 +512,6 @@
 				"icon": "$(beaker)",
 				"userDescription": "%copilot.testFailure.tool.description%",
 				"modelDescription": "Includes test failure information in the prompt.",
-				"inputSchema": {},
 				"tags": [
 					"vscode_editing_with_tests",
 					"enable_other_tool_copilot_readFile",
