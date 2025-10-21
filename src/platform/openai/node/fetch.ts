@@ -7,6 +7,7 @@ import { ClientHttp2Stream } from 'http2';
 import type { CancellationToken } from 'vscode';
 import { createRequestHMAC } from '../../../util/common/crypto';
 import { generateUuid } from '../../../util/vs/base/common/uuid';
+import { IInstantiationService, ServicesAccessor } from '../../../util/vs/platform/instantiation/common/instantiation';
 import { IAuthenticationService } from '../../authentication/common/authentication';
 import { IChatQuotaService } from '../../chat/common/chatQuotaService';
 import { ChatLocation } from '../../chat/common/commonTypes';
@@ -16,7 +17,7 @@ import { IDomainService } from '../../endpoint/common/domainService';
 import { IEnvService } from '../../env/common/envService';
 import { ILogService } from '../../log/common/logService';
 import { FinishedCallback, OptionalChatRequestParams, RequestId, getProcessingTime, getRequestId } from '../../networking/common/fetch';
-import { IFetcherService, Response } from '../../networking/common/fetcherService';
+import { FetcherId, IFetcherService, Response } from '../../networking/common/fetcherService';
 import { IChatEndpoint, IEndpointBody, postRequest, stringifyUrlOrRequestMetadata } from '../../networking/common/networking';
 import { CAPIChatMessage, ChatCompletion } from '../../networking/common/openai';
 import { sendEngineMessagesTelemetry } from '../../networking/node/chatStream';
@@ -96,15 +97,7 @@ export enum ChatFailKind {
  * or rewrite is necessary to have a more generic fetcher that can be used for both completions and chat models.
  */
 export async function fetchAndStreamChat(
-	logService: ILogService,
-	telemetryService: ITelemetryService,
-	fetcherService: IFetcherService,
-	envService: IEnvService,
-	chatQuotaService: IChatQuotaService,
-	domainService: IDomainService,
-	capiClientService: ICAPIClientService,
-	authenticationService: IAuthenticationService,
-	interactionService: IInteractionService,
+	accessor: ServicesAccessor,
 	chatEndpointInfo: IChatEndpoint,
 	request: IEndpointBody,
 	baseTelemetryData: TelemetryData,
@@ -115,8 +108,19 @@ export async function fetchAndStreamChat(
 	nChoices: number | undefined,
 	userInitiatedRequest?: boolean,
 	cancel?: CancellationToken | undefined,
-	telemetryProperties?: TelemetryProperties | undefined
+	telemetryProperties?: TelemetryProperties | undefined,
+	useFetcher?: FetcherId,
 ): Promise<ChatResults | ChatRequestFailed | ChatRequestCanceled> {
+	const logService = accessor.get(ILogService);
+	const telemetryService = accessor.get(ITelemetryService);
+	const fetcherService = accessor.get(IFetcherService);
+	const envService = accessor.get(IEnvService);
+	const chatQuotaService = accessor.get(IChatQuotaService);
+	const domainService = accessor.get(IDomainService);
+	const capiClientService = accessor.get(ICAPIClientService);
+	const authenticationService = accessor.get(IAuthenticationService);
+	const interactionService = accessor.get(IInteractionService);
+	const instantiationService = accessor.get(IInstantiationService);
 	if (cancel?.isCancellationRequested) {
 		return { type: FetchResponseKind.Canceled, reason: 'before fetch request' };
 	}
@@ -157,7 +161,9 @@ export async function fetchAndStreamChat(
 		location,
 		userInitiatedRequest,
 		cancel,
-		{ ...telemetryProperties, modelCallId });
+		{ ...telemetryProperties, modelCallId },
+		useFetcher,
+	);
 
 	if (cancel?.isCancellationRequested) {
 		const body = await response!.body();
@@ -179,7 +185,7 @@ export async function fetchAndStreamChat(
 	if (response.status !== 200) {
 		const telemetryData = createTelemetryData(chatEndpointInfo, location, ourRequestId);
 		logService.info('Request ID for failed request: ' + ourRequestId);
-		return handleError(logService, telemetryService, authenticationService, telemetryData, response, ourRequestId);
+		return instantiationService.invokeFunction(handleError, telemetryData, response, ourRequestId);
 	}
 
 	// Extend baseTelemetryData with modelCallId for output messages
@@ -220,13 +226,14 @@ function createTelemetryData(chatEndpointInfo: IChatEndpoint, location: ChatLoca
 }
 
 async function handleError(
-	logService: ILogService,
-	telemetryService: ITelemetryService,
-	authenticationService: IAuthenticationService,
+	accessor: ServicesAccessor,
 	telemetryData: TelemetryData,
 	response: Response,
 	requestId: string,
 ): Promise<ChatRequestFailed> {
+	const logService = accessor.get(ILogService);
+	const telemetryService = accessor.get(ITelemetryService);
+	const authenticationService = accessor.get(IAuthenticationService);
 	const modelRequestIdObj = getRequestId(response, undefined);
 	requestId = modelRequestIdObj.headerRequestId || requestId;
 	modelRequestIdObj.headerRequestId = requestId;
@@ -329,11 +336,20 @@ async function handleError(
 		}
 
 		if (response.status === 404) {
+			let errorReason: string;
+
+			// Check if response body is valid JSON
+			if (!jsonData) {
+				errorReason = text;
+			} else {
+				errorReason = JSON.stringify(jsonData);
+			}
+
 			return {
 				type: FetchResponseKind.Failed,
 				modelRequestId: modelRequestIdObj,
 				failKind: ChatFailKind.NotFound,
-				reason: 'Resource not found'
+				reason: errorReason
 			};
 		}
 
@@ -461,7 +477,8 @@ async function fetchWithInstrumentation(
 	location: ChatLocation,
 	userInitiatedRequest?: boolean,
 	cancel?: CancellationToken,
-	telemetryProperties?: TelemetryProperties
+	telemetryProperties?: TelemetryProperties,
+	useFetcher?: FetcherId,
 ): Promise<Response> {
 
 	// If request contains an image, we include this header.
@@ -501,9 +518,7 @@ async function fetchWithInstrumentation(
 	// Wrap the Promise with success/error callbacks so we can log/measure it
 	return postRequest(
 		fetcherService,
-		envService,
 		telemetryService,
-		domainService,
 		capiClientService,
 		chatEndpoint,
 		secretKey,
@@ -512,7 +527,8 @@ async function fetchWithInstrumentation(
 		ourRequestId,
 		request,
 		additionalHeaders,
-		cancel
+		cancel,
+		useFetcher,
 	).then(response => {
 		const apim = response.headers.get('apim-request-id');
 		if (apim) {
