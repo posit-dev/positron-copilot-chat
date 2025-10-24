@@ -10,16 +10,13 @@ import { ITokenizer, TokenizerType } from '../../../util/common/tokenizer';
 import { AsyncIterableObject } from '../../../util/vs/base/common/async';
 import { IChatMLFetcher, Source } from '../../chat/common/chatMLFetcher';
 import { ChatLocation, ChatResponse } from '../../chat/common/commonTypes';
-import { IEnvService } from '../../env/common/envService';
 import { ILogService } from '../../log/common/logService';
 import { FinishedCallback, OptionalChatRequestParams } from '../../networking/common/fetch';
 import { Response } from '../../networking/common/fetcherService';
 import { IChatEndpoint, ICreateEndpointBodyOptions, IEndpointBody, IMakeChatRequestOptions } from '../../networking/common/networking';
 import { ChatCompletion } from '../../networking/common/openai';
-import { IExperimentationService } from '../../telemetry/common/nullExperimentationService';
 import { ITelemetryService, TelemetryProperties } from '../../telemetry/common/telemetry';
 import { TelemetryData } from '../../telemetry/common/telemetryData';
-import { IAuthenticationService } from '../../authentication/common/authentication';
 
 /**
  * This endpoint represents the "Auto" model in the model picker.
@@ -57,6 +54,10 @@ export class AutoChatEndpoint implements IChatEndpoint {
 		this.multiplier = Math.round(baseMultiplier * (1 - this._discountPercent) * 100) / 100;
 	}
 
+	public get apiType(): string | undefined {
+		return this._wrappedEndpoint.apiType;
+	}
+
 	getExtraHeaders(): Record<string, string> {
 		return {
 			...(this._wrappedEndpoint.getExtraHeaders?.() || {}),
@@ -86,6 +87,8 @@ export class AutoChatEndpoint implements IChatEndpoint {
 			requestOptions: {},
 			...options,
 			endpoint: this,
+			// TODO https://github.com/microsoft/vscode/issues/266410
+			ignoreStatefulMarker: options.ignoreStatefulMarker ?? true
 		}, token);
 	}
 
@@ -111,35 +114,4 @@ export class AutoChatEndpoint implements IChatEndpoint {
 			telemetryProperties,
 		}, token);
 	}
-}
-
-/**
- * Checks if the auto chat mode is enabled.
- * @param expService The experimentation service to use to check if the auto mode is enabled
- * @param envService The environment service to use to check if the auto mode is enabled
- * @returns True if the auto mode is enabled, false otherwise
- */
-export async function isAutoModelEnabled(expService: IExperimentationService, envService: IEnvService, authService: IAuthenticationService): Promise<boolean> {
-	if (envService.isPreRelease()) {
-		return true;
-	}
-
-	if (!!expService.getTreatmentVariable<boolean>('autoModelEnabled')) {
-		try {
-			(await authService.getCopilotToken()).isEditorPreviewFeaturesEnabled();
-		} catch (e) {
-			return false;
-		}
-	}
-
-	return false;
-}
-
-/**
- * Checks if the auto chat model is the default model
- * @param expService The experimentation service to use to check if the auto model is the default
- * @returns True if the auto model is the default, false otherwise
- */
-export function isAutoModelDefault(expService: IExperimentationService) {
-	return !!expService.getTreatmentVariable<boolean>('autoModelDefault');
 }

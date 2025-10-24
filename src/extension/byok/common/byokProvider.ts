@@ -5,7 +5,7 @@
 import type { Disposable, LanguageModelChatInformation, LanguageModelChatProvider, LanguageModelDataPart, LanguageModelTextPart, LanguageModelThinkingPart, LanguageModelToolCallPart } from 'vscode';
 import { CopilotToken } from '../../../platform/authentication/common/copilotToken';
 import { ICAPIClientService } from '../../../platform/endpoint/common/capiClient';
-import { IChatModelInformation } from '../../../platform/endpoint/common/endpointProvider';
+import { EndpointEditToolName, IChatModelInformation } from '../../../platform/endpoint/common/endpointProvider';
 import { TokenizerType } from '../../../util/common/tokenizer';
 import { localize } from '../../../util/vs/nls';
 
@@ -54,6 +54,8 @@ export interface BYOKModelCapabilities {
 	toolCalling: boolean;
 	vision: boolean;
 	thinking?: boolean;
+	editTools?: EndpointEditToolName[];
+	requestHeaders?: Record<string, string>;
 }
 
 export interface BYOKModelRegistry {
@@ -116,7 +118,7 @@ export function resolveModelInfo(modelId: string, providerName: string, knownMod
 	}
 	const modelName = knownModelInfo?.name || modelId;
 	const contextWinow = knownModelInfo ? (knownModelInfo.maxInputTokens + knownModelInfo.maxOutputTokens) : 128000;
-	return {
+	const modelInfo: IChatModelInformation = {
 		id: modelId,
 		name: modelName,
 		version: '1.0.0',
@@ -140,6 +142,10 @@ export function resolveModelInfo(modelId: string, providerName: string, knownMod
 		is_chat_fallback: false,
 		model_picker_enabled: true
 	};
+	if (knownModelInfo?.requestHeaders && Object.keys(knownModelInfo.requestHeaders).length > 0) {
+		modelInfo.requestHeaders = { ...knownModelInfo.requestHeaders };
+	}
+	return modelInfo;
 }
 
 export function byokKnownModelsToAPIInfo(providerName: string, knownModels: BYOKKnownModels | undefined): LanguageModelChatInformation[] {
