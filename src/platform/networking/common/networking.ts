@@ -13,13 +13,12 @@ import { CancellationError } from '../../../util/vs/base/common/errors';
 import { Source } from '../../chat/common/chatMLFetcher';
 import type { ChatLocation, ChatResponse } from '../../chat/common/commonTypes';
 import { ICAPIClientService } from '../../endpoint/common/capiClient';
-import { IDomainService } from '../../endpoint/common/domainService';
-import { IEnvService } from '../../env/common/envService';
+import { CustomModel, EndpointEditToolName } from '../../endpoint/common/endpointProvider';
 import { ILogService } from '../../log/common/logService';
 import { ITelemetryService, TelemetryProperties } from '../../telemetry/common/telemetry';
 import { TelemetryData } from '../../telemetry/common/telemetryData';
 import { FinishedCallback, OpenAiFunctionTool, OpenAiResponsesFunctionTool, OptionalChatRequestParams } from './fetch';
-import { FetchOptions, IAbortController, IFetcherService, Response } from './fetcherService';
+import { FetcherId, FetchOptions, IAbortController, IFetcherService, Response } from './fetcherService';
 import { ChatCompletion, RawMessageConversionCallback, rawMessageToCAPI } from './openai';
 
 /**
@@ -122,6 +121,10 @@ export function stringifyUrlOrRequestMetadata(urlOrRequestMetadata: string | Req
 	return JSON.stringify(urlOrRequestMetadata);
 }
 
+export interface IEmbeddingsEndpoint extends IEndpoint {
+	readonly maxBatchSize: number;
+}
+
 export interface IMakeChatRequestOptions {
 	/** The debug name for this request */
 	debugName: string;
@@ -140,8 +143,12 @@ export interface IMakeChatRequestOptions {
 	userInitiatedRequest?: boolean;
 	/** (CAPI-only) Optional telemetry properties for analytics */
 	telemetryProperties?: TelemetryProperties;
-	/** Whether this request is retrying a filtered response */
-	isFilterRetry?: boolean;
+	/** Enable retrying the request when it was filtered due to snippy. Note- if using finishedCb, requires supporting delta.retryReason, eg with clearToPreviousToolInvocation */
+	enableRetryOnFilter?: boolean;
+	/** Enable retrying the request when it failed. Defaults to enableRetryOnFilter. Note- if using finishedCb, requires supporting delta.retryReason, eg with clearToPreviousToolInvocation */
+	enableRetryOnError?: boolean;
+	/** Which fetcher to use, overrides the default. */
+	useFetcher?: FetcherId;
 }
 
 export interface ICreateEndpointBodyOptions extends IMakeChatRequestOptions {
@@ -154,15 +161,20 @@ export interface IChatEndpoint extends IEndpoint {
 	/** The model ID- this may change and will be `copilot-base` for the base model. Use `family` to switch behavior based on model type. */
 	readonly model: string;
 	readonly apiType?: string;
+	readonly supportsThinkingContentInHistory?: boolean;
 	readonly supportsToolCalls: boolean;
 	readonly supportsVision: boolean;
 	readonly supportsPrediction: boolean;
+	readonly supportedEditTools?: readonly EndpointEditToolName[];
 	readonly showInModelPicker: boolean;
 	readonly isPremium?: boolean;
+	readonly degradationReason?: string;
 	readonly multiplier?: number;
 	readonly restrictedToSkus?: string[];
 	readonly isDefault: boolean;
 	readonly isFallback: boolean;
+	readonly customModel?: CustomModel;
+	readonly isExtensionContributed?: boolean;
 	readonly policy: 'enabled' | { terms: string };
 	/**
 	 * Handles processing of responses from a chat endpoint. Each endpoint can have different response formats.
@@ -246,19 +258,17 @@ export function createCapiRequestBody(options: ICreateEndpointBodyOptions, model
 
 function networkRequest(
 	fetcher: IFetcher,
-	envService: IEnvService,
 	telemetryService: ITelemetryService,
-	domainService: IDomainService,
 	capiClientService: ICAPIClientService,
 	requestType: 'GET' | 'POST',
 	endpointOrUrl: IEndpoint | string | RequestMetadata,
 	secretKey: string,
-	hmac: string | undefined,
 	intent: string,
 	requestId: string,
 	body?: IEndpointBody,
 	additionalHeaders?: Record<string, string>,
-	cancelToken?: CancellationToken
+	cancelToken?: CancellationToken,
+	useFetcher?: FetcherId,
 ): Promise<Response> {
 	// TODO @lramos15 Eventually don't even construct this fake endpoint object.
 	const endpoint = typeof endpointOrUrl === 'string' || 'type' in endpointOrUrl ? {
@@ -291,6 +301,7 @@ function networkRequest(
 		headers: headers,
 		json: body,
 		timeout: requestTimeoutMs,
+		useFetcher,
 	};
 
 	if (cancelToken) {
@@ -339,9 +350,7 @@ export function canRetryOnceNetworkError(reason: any) {
 
 export function postRequest(
 	fetcherService: IFetcherService,
-	envService: IEnvService,
 	telemetryService: ITelemetryService,
-	domainService: IDomainService,
 	capiClientService: ICAPIClientService,
 	endpointOrUrl: IEndpoint | string | RequestMetadata,
 	secretKey: string,
@@ -350,30 +359,27 @@ export function postRequest(
 	requestId: string,
 	body?: IEndpointBody,
 	additionalHeaders?: Record<string, string>,
-	cancelToken?: CancellationToken
+	cancelToken?: CancellationToken,
+	useFetcher?: FetcherId,
 ): Promise<Response> {
 	return networkRequest(fetcherService,
-		envService,
 		telemetryService,
-		domainService,
 		capiClientService,
 		'POST',
 		endpointOrUrl,
 		secretKey,
-		hmac,
 		intent,
 		requestId,
 		body,
 		additionalHeaders,
-		cancelToken
+		cancelToken,
+		useFetcher,
 	);
 }
 
 export function getRequest(
 	fetcherService: IFetcher,
-	envService: IEnvService,
 	telemetryService: ITelemetryService,
-	domainService: IDomainService,
 	capiClientService: ICAPIClientService,
 	endpointOrUrl: IEndpoint | string | RequestMetadata,
 	secretKey: string,
@@ -385,14 +391,11 @@ export function getRequest(
 	cancelToken?: CancellationToken
 ): Promise<Response> {
 	return networkRequest(fetcherService,
-		envService,
 		telemetryService,
-		domainService,
 		capiClientService,
 		'GET',
 		endpointOrUrl,
 		secretKey,
-		hmac,
 		intent,
 		requestId,
 		body,
