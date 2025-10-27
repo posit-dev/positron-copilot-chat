@@ -11,7 +11,14 @@ import { promises as fs } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import type * as vscode from 'vscode';
-import type { Dealer, Push, Socket, Subscriber } from 'zeromq';
+// --- Start Positron ---
+// import type { Dealer, Push, Socket, Subscriber } from 'zeromq';
+// zeromq dependency removed - import types conditionally
+type Dealer = any;
+type Push = any;
+type Socket = any;
+type Subscriber = any;
+// --- End Positron ---
 import { ITestingServicesAccessor } from '../../src/platform/test/node/services';
 import { createSha256Hash } from '../../src/util/common/crypto';
 import { ExtHostNotebookDocumentData, translateDisplayDataOutput, translateErrorOutput, translateStreamOutput } from '../../src/util/common/test/shims/notebookDocument';
@@ -120,7 +127,10 @@ export function getZeroMQ(): typeof import('zeromq') {
 		const zmq = require(`${'zeromq'}`);
 		return zmq;
 	} catch (e) {
-		throw e;
+		// --- Start Positron ---
+		// throw e;
+		throw new Error('zeromq dependency is not available. Tests requiring zeromq functionality have been disabled.');
+		// --- End Positron ---
 	}
 }
 

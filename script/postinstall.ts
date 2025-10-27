@@ -3,16 +3,27 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import { downloadZMQ } from '@vscode/zeromq';
+// --- Start Positron ---
+// zeromq dependency removed - tests that depend on it will be skipped
+// import { downloadZMQ } from '@vscode/zeromq';
+let downloadZMQ: (() => Promise<void>) | undefined;
+try {
+	// Check if the package exists before trying to require it
+	const zeromqPath = require.resolve('@vscode/zeromq');
+	if (zeromqPath) {
+		downloadZMQ = require('@vscode/zeromq').downloadZMQ;
+	}
+} catch (e) {
+	// @vscode/zeromq not available, skip ZMQ download
+	downloadZMQ = undefined;
+}
+// --- End Positron ---
+
 import { spawn } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 import { compressTikToken } from './build/compressTikToken';
 import { copyStaticAssets } from './build/copyStaticAssets';
-
-// --- Start Positron ---
-import { spawn } from 'child_process';
-// --- End Positron ---
 
 export interface ITreeSitterGrammar {
 	name: string;
@@ -157,10 +168,14 @@ async function main() {
 		'node_modules/@vscode/tree-sitter-wasm/wasm/tree-sitter.wasm',
 	], 'dist');
 
-	// Clone zeromq.js from specific commit
-	await cloneZeroMQ('1cbebce3e17801bea63a4dcc975b982923cb4592');
 
-	await downloadZMQ();
+	if (downloadZMQ) {
+		// Clone zeromq.js from specific commit
+		await cloneZeroMQ('1cbebce3e17801bea63a4dcc975b982923cb4592');
+		await downloadZMQ();
+	} else {
+		console.log('Skipping ZMQ download - zeromq dependency not available (tests requiring zeromq will be skipped)');
+	}
 
 	// Check if the base cache file exists
 	const baseCachePath = path.join('test', 'simulation', 'cache', 'base.sqlite');
