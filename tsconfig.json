@@ -36,7 +36,7 @@
 		"test/aml/out",
 		"**/*.sh",
 		"**/*.ps1",
-		"**/script/**"
-		"src/extension/completions-core/vscode-node/extension/src/copilotPanel/webView/suggestionsPanelWebview.ts",
+		"**/script/**",
+		"src/extension/completions-core/vscode-node/extension/src/copilotPanel/webView/suggestionsPanelWebview.ts"
 	]
 }
