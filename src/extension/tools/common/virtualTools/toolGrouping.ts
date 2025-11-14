@@ -26,8 +26,7 @@ export function computeToolGroupingMinThreshold(experimentationService: IExperim
 }
 
 export class ToolGrouping implements IToolGrouping {
-
-	private readonly _root = new VirtualTool(VIRTUAL_TOOL_NAME_PREFIX, '', Infinity, { groups: [], toolsetKey: '', wasExpandedByDefault: true });
+	private readonly _root = new VirtualTool(VIRTUAL_TOOL_NAME_PREFIX, '', Infinity, { wasExpandedByDefault: true });
 	protected _grouper: IToolCategorization = this._instantiationService.createInstance(VirtualToolGrouper);
 	private _didToolsChange = true;
 	private _turnNo = 0;
@@ -46,16 +45,10 @@ export class ToolGrouping implements IToolGrouping {
 		}
 	}
 
-	public get isEnabled() {
-		return this._tools.length >= computeToolGroupingMinThreshold(this._experimentationService, this._configurationService).get();
-	}
-
 	constructor(
 		private _tools: readonly LanguageModelToolInformation[],
 		@IInstantiationService private readonly _instantiationService: IInstantiationService,
-		@ITelemetryService private readonly _telemetryService: ITelemetryService,
-		@IConfigurationService private readonly _configurationService: IConfigurationService,
-		@IExperimentationService private readonly _experimentationService: IExperimentationService
+		@ITelemetryService private readonly _telemetryService: ITelemetryService
 	) {
 		this._root.isExpanded = true;
 	}

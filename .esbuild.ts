@@ -36,12 +36,10 @@ const baseNodeBuildOptions = {
 		'applicationinsights-native-metrics',
 		'@opentelemetry/instrumentation',
 		'@azure/opentelemetry-instrumentation-azure-sdk',
-		'zeromq',
 		'electron', // this is for simulation workbench,
 		'sqlite3',
-		// --- Start Positron ---
-		'@vscode/prompt-tsx',
-		// --- End Positron ---
+		'node-pty', // Required by @github/copilot
+		'@github/copilot',
 		...(isDev ? [] : ['dotenv', 'source-map-support'])
 	],
 	platform: 'node',
@@ -49,6 +47,15 @@ const baseNodeBuildOptions = {
 	define: {
 		'process.env.APPLICATIONINSIGHTS_CONFIGURATION_CONTENT': '"{}"'
 	},
+} satisfies esbuild.BuildOptions;
+
+const webviewBuildOptions = {
+	...baseBuildOptions,
+	platform: 'browser',
+	target: 'es2024', // Electron 34 -> Chrome 132 -> ES2024
+	entryPoints: [
+		{ in: 'src/extension/completions-core/vscode-node/extension/src/copilotPanel/webView/suggestionsPanelWebview.ts', out: 'suggestionsPanelWebview' },
+	],
 } satisfies esbuild.BuildOptions;
 
 const nodeExtHostTestGlobs = [
@@ -115,10 +122,10 @@ const sanityTestBundlePlugin: esbuild.Plugin = {
 };
 
 const importMetaPlugin: esbuild.Plugin = {
-	name: 'claudeAgentSdkImportMetaPlugin',
+	name: 'claudeCodeImportMetaPlugin',
 	setup(build) {
-		// Handle import.meta.url in @anthropic-ai/claude-agent-sdk package
-		build.onLoad({ filter: /node_modules[\/\\]@anthropic-ai[\/\\]claude-agent-sdk[\/\\].*\.mjs$/ }, async (args) => {
+		// Handle import.meta.url in @anthropic-ai/claude-code package
+		build.onLoad({ filter: /node_modules[\/\\]@anthropic-ai[\/\\]claude-code[\/\\].*\.mjs$/ }, async (args) => {
 			const contents = await fs.promises.readFile(args.path, 'utf8');
 			return {
 				contents: contents.replace(
@@ -173,6 +180,7 @@ const nodeExtHostBuildOptions = {
 		{ in: './src/platform/diff/node/diffWorkerMain.ts', out: 'diffWorker' },
 		{ in: './src/platform/tfidf/node/tfidfWorker.ts', out: 'tfidfWorker' },
 		{ in: './src/extension/onboardDebug/node/copilotDebugWorker/index.ts', out: 'copilotDebugCommand' },
+		{ in: './src/extension/chatSessions/vscode-node/copilotCLIShim.ts', out: 'copilotCLIShim' },
 		{ in: './src/test-extension.ts', out: 'test-extension' },
 		{ in: './src/sanity-test-extension.ts', out: 'sanity-test-extension' },
 	],
@@ -355,6 +363,7 @@ async function main() {
 			esbuild.build(nodeSimulationWorkbenchUIBuildOptions),
 			esbuild.build(nodeExtHostSimulationTestOptions),
 			esbuild.build(typeScriptServerPluginBuildOptions),
+			esbuild.build(webviewBuildOptions),
 		]);
 	}
 }
