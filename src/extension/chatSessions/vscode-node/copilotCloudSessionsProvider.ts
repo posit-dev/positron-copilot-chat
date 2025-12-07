@@ -328,14 +328,25 @@ export class CopilotCloudSessionsProvider extends Disposable implements vscode.C
 		}
 	}
 
-	async provideChatSessionItems(token: vscode.CancellationToken): Promise<vscode.ChatSessionItem[]> {
-		// Return cached items if available
-		if (this.cachedSessionItems) {
+	private async overrideWithCache(): Promise<vscode.ChatSessionItem[] | undefined> {
+		// Return cache only if is already being tracked
+		if (this.cachedSessionItems && this.activeSessionIds.size > 0) {
 			return this.cachedSessionItems;
 		}
 
+		// Multiple calls should return the same promise as long as it's pending
 		if (this.chatSessionItemsPromise) {
-			return this.chatSessionItemsPromise;
+			return await this.chatSessionItemsPromise;
+		}
+
+		// No cache, refresh
+		return undefined;
+	}
+
+	async provideChatSessionItems(token: vscode.CancellationToken): Promise<vscode.ChatSessionItem[]> {
+		const cache = await this.overrideWithCache();
+		if (cache) {
+			return cache;
 		}
 		this.chatSessionItemsPromise = (async () => {
 			const repoId = await getRepoId(this._gitService);
