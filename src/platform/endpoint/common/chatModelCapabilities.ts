@@ -237,7 +237,7 @@ export function isGpt51Family(model: LanguageModelChat | IChatEndpoint | string 
 	}
 
 	const family = typeof model === 'string' ? model : model.family;
-	return !!family.match(/^gpt-5\.1$/i) || family === 'arctic-fox';
+	return !!family.match(/^gpt-5\.1/i) || family === 'arctic-fox';
 }
 
 /**
