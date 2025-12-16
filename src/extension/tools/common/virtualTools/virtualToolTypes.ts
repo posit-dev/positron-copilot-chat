@@ -16,11 +16,6 @@ export interface IToolGrouping {
 	tools: readonly LanguageModelToolInformation[];
 
 	/**
-	 * Whether tool grouping logic is enabled at the current tool threshold.
-	 */
-	isEnabled: boolean;
-
-	/**
 	 * Should be called for each model tool call. Returns a tool result if the
 	 * call was a virtual tool call that was expanded.
 	 */
@@ -92,7 +87,7 @@ export interface IToolGroupingCache {
 	/**
 	 * Gets or inserts the grouping for the given set of tools.
 	 */
-	getOrInsert(tools: LanguageModelToolInformation[], factory: () => Promise<ISummarizedToolCategory[] | undefined>): Promise<ISummarizedToolCategory[] | undefined>;
+	getDescription(tools: LanguageModelToolInformation[]): Promise<ISummarizedToolCategoryUpdatable>;
 }
 
 export const IToolGroupingCache = createServiceIdentifier<IToolGroupingCache>('IToolGroupingCache');
@@ -116,6 +111,12 @@ export interface ISummarizedToolCategory {
 	summary: string;
 	name: string;
 	tools: LanguageModelToolInformation[];
+}
+
+export interface ISummarizedToolCategoryUpdatable {
+	category: ISummarizedToolCategory | undefined;
+	tools: LanguageModelToolInformation[];
+	update(up: ISummarizedToolCategory): void;
 }
 
 export class SummarizerError extends Error { }

@@ -30,7 +30,7 @@ import { ICopilotTool, ToolRegistry } from '../common/toolsRegistry';
 import { IToolsService } from '../common/toolsService';
 import { ActionType } from './applyPatch/parser';
 import { EditFileResult } from './editFileToolResult';
-import { createEditConfirmation } from './editFileToolUtils';
+import { createEditConfirmation, formatDiffAsUnified } from './editFileToolUtils';
 import { assertFileNotContentExcluded, formatUriForFileWidget, resolveToolInputPath } from './toolUtils';
 
 export interface ICreateFileParams {
@@ -77,13 +77,18 @@ export class CreateFileTool implements ICopilotTool<ICreateFileParams> {
 		const fileExists = await this.fileExists(uri);
 		const hasSupportedNotebooks = this.notebookService.hasSupportedNotebooks(uri);
 		let doc: undefined | NotebookDocumentSnapshot | TextDocumentSnapshot = undefined;
-		if (fileExists && hasSupportedNotebooks) {
-			doc = await this.workspaceService.openNotebookDocumentAndSnapshot(uri, this.alternativeNotebookContent.getFormat(this._promptContext?.request?.model));
-		} else if (fileExists && !hasSupportedNotebooks) {
-			doc = await this.workspaceService.openTextDocumentAndSnapshot(uri);
+		try {
+			if (hasSupportedNotebooks) {
+				doc = await this.workspaceService.openNotebookDocumentAndSnapshot(uri, this.alternativeNotebookContent.getFormat(this._promptContext?.request?.model));
+			} else {
+				doc = await this.workspaceService.openTextDocumentAndSnapshot(uri);
+			}
+		} catch (e) {
+			// ignored
 		}
 
-		if (fileExists && doc?.getText() !== '') {
+		// note: fileExists could be `false` but we might still get a `doc` if it's held in memory
+		if (fileExists && !!doc?.getText()) {
 			if (hasSupportedNotebooks) {
 				throw new Error(`File already exists. You must use the ${ToolName.EditNotebook} tool to modify it.`);
 			} else {
@@ -153,13 +158,21 @@ export class CreateFileTool implements ICopilotTool<ICreateFileParams> {
 
 	async prepareInvocation(options: vscode.LanguageModelToolInvocationPrepareOptions<ICreateFileParams>, token: vscode.CancellationToken): Promise<vscode.PreparedToolInvocation> {
 		const uri = resolveToolInputPath(options.input.filePath, this.promptPathRepresentationService);
+		const content = options.input.content || '';
+
+		const confirmation = await this.instantiationService.invokeFunction(
+			createEditConfirmation,
+			[uri],
+			async () => this.instantiationService.invokeFunction(
+				formatDiffAsUnified,
+				uri,
+				'', // Empty initial content
+				content
+			),
+		);
 
 		return {
-			...await this.instantiationService.invokeFunction(
-				createEditConfirmation,
-				[uri],
-				() => 'Contents:\n\n```\n' + options.input.content || '<empty>' + '\n```',
-			),
+			...confirmation,
 			presentation: undefined,
 			invocationMessage: new MarkdownString(l10n.t`Creating ${formatUriForFileWidget(uri)}`),
 			pastTenseMessage: new MarkdownString(l10n.t`Created ${formatUriForFileWidget(uri)}`)

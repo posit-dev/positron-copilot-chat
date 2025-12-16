@@ -12,6 +12,7 @@ import { ChoiceLogProbs, FilterReason } from './openai';
 
 export interface RequestId {
 	headerRequestId: string;
+	gitHubRequestId: string;
 	completionId: string;
 	created: number;
 	serverExperiments: string;
@@ -21,19 +22,12 @@ export interface RequestId {
 export function getRequestId(response: Response, json?: any): RequestId {
 	return {
 		headerRequestId: response.headers.get('x-request-id') || '',
+		gitHubRequestId: response.headers.get('x-github-request-id') || '',
 		completionId: json && json.id ? json.id : '',
 		created: json && json.created ? json.created : 0,
 		serverExperiments: response.headers.get('X-Copilot-Experiment') || '',
 		deploymentId: response.headers.get('azureml-model-deployment') || '',
 	};
-}
-
-export function getProcessingTime(response: Response): number {
-	const reqIdStr = response.headers.get('openai-processing-ms');
-	if (reqIdStr) {
-		return parseInt(reqIdStr, 10);
-	}
-	return 0;
 }
 
 // Request methods

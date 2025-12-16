@@ -14,19 +14,19 @@ import { DocumentId } from '../../../platform/inlineEdits/common/dataTypes/docum
 import { InlineEditRequestLogContext } from '../../../platform/inlineEdits/common/inlineEditLogContext';
 import { ShowNextEditPreference } from '../../../platform/inlineEdits/common/statelessNextEditProvider';
 import { ILogService } from '../../../platform/log/common/logService';
+import { getNotebookId } from '../../../platform/notebook/common/helpers';
 import { INotebookService } from '../../../platform/notebook/common/notebookService';
 import { IExperimentationService } from '../../../platform/telemetry/common/nullExperimentationService';
 import { ITelemetryService } from '../../../platform/telemetry/common/telemetry';
 import { IWorkspaceService } from '../../../platform/workspace/common/workspaceService';
 import { findCell, findNotebook, isNotebookCell } from '../../../util/common/notebooks';
 import { ITracer, createTracer } from '../../../util/common/tracing';
-import { softAssert } from '../../../util/vs/base/common/assert';
 import { raceCancellation, timeout } from '../../../util/vs/base/common/async';
 import { CancellationTokenSource } from '../../../util/vs/base/common/cancellation';
 import { Event } from '../../../util/vs/base/common/event';
 import { StringEdit } from '../../../util/vs/editor/common/core/edits/stringEdit';
 import { IInstantiationService } from '../../../util/vs/platform/instantiation/common/instantiation';
-import { LineCheck } from '../../inlineChat/vscode-node/inlineChatHint';
+import { LineCheck } from '../../inlineChat/vscode-node/naturalLanguageHint';
 import { NextEditProviderTelemetryBuilder, TelemetrySender } from '../node/nextEditProviderTelemetry';
 import { INextEditResult, NextEditResult } from '../node/nextEditResult';
 import { InlineCompletionCommand, InlineEditDebugComponent } from './components/inlineEditDebugComponent';
@@ -38,8 +38,6 @@ import { isInlineSuggestion } from './isInlineSuggestion';
 import { InlineEditLogger } from './parts/inlineEditLogger';
 import { IVSCodeObservableDocument } from './parts/vscodeWorkspace';
 import { toExternalRange } from './utils/translations';
-import { getNotebookId } from '../../../platform/notebook/common/helpers';
-import { IAuthenticationService } from '../../../platform/authentication/common/authentication';
 
 const learnMoreAction: Command = {
 	title: l10n.t('Learn More'),
@@ -94,11 +92,11 @@ function isLlmCompletionInfo(item: NesCompletionInfo): item is LlmCompletionInfo
 	return item.source === 'provider';
 }
 
-const GoToNextEdit = l10n.t('Go To Next Edit');
+const GoToNextEdit = l10n.t('Go To Inline Suggestion');
 
 
 export class InlineCompletionProviderImpl implements InlineCompletionItemProvider {
-	public readonly displayName = 'Next Edit Suggestion';
+	public readonly displayName = 'Inline Suggestion';
 
 	private readonly _tracer: ITracer;
 
@@ -120,7 +118,6 @@ export class InlineCompletionProviderImpl implements InlineCompletionItemProvide
 		@IGitExtensionService private readonly _gitExtensionService: IGitExtensionService,
 		@INotebookService private readonly _notebookService: INotebookService,
 		@IWorkspaceService private readonly _workspaceService: IWorkspaceService,
-		@IAuthenticationService private readonly authenticationService: IAuthenticationService,
 	) {
 		this._tracer = createTracer(['NES', 'Provider'], (s) => this._logService.trace(s));
 		this._displayNextEditorNES = this._configurationService.getExperimentBasedConfig(ConfigKey.Internal.UseAlternativeNESNotebookFormat, this._expService);
@@ -128,7 +125,7 @@ export class InlineCompletionProviderImpl implements InlineCompletionItemProvide
 
 	// copied from `vscodeWorkspace.ts` `DocumentFilter#_enabledLanguages`
 	private _isCompletionsEnabled(document: TextDocument): boolean {
-		const enabledLanguages = this._configurationService.getConfig(ConfigKey.Shared.Enable);
+		const enabledLanguages = this._configurationService.getConfig(ConfigKey.Enable);
 		const enabledLanguagesMap = new Map(Object.entries(enabledLanguages));
 		if (!enabledLanguagesMap.has('*')) {
 			enabledLanguagesMap.set('*', false);
@@ -154,12 +151,6 @@ export class InlineCompletionProviderImpl implements InlineCompletionItemProvide
 
 		if (!isInlineEditsEnabled && !serveAsCompletionsProvider) {
 			tracer.returns('inline edits disabled');
-			return undefined;
-		}
-
-		if (this.authenticationService.copilotToken?.isNoAuthUser) {
-			// TODO@bpasero revisit this in the future
-			tracer.returns('inline edits disabled for anonymous users');
 			return undefined;
 		}
 
@@ -374,7 +365,8 @@ export class InlineCompletionProviderImpl implements InlineCompletionItemProvide
 		const displayLocation: InlineCompletionDisplayLocation | undefined = result.displayLocation && displayLocationRange ? {
 			range: displayLocationRange,
 			label: result.displayLocation.label,
-			kind: InlineCompletionDisplayLocationKind.Code
+			kind: InlineCompletionDisplayLocationKind.Code,
+			jumpToEdit: result.displayLocation.jumpToEdit
 		} : undefined;
 
 
@@ -383,6 +375,7 @@ export class InlineCompletionProviderImpl implements InlineCompletionItemProvide
 			insertText: result.edit.newText,
 			showRange,
 			displayLocation,
+			command: result.action,
 		};
 	}
 
@@ -429,6 +422,17 @@ export class InlineCompletionProviderImpl implements InlineCompletionItemProvide
 			case InlineCompletionEndOfLifeReasonKind.Ignored: {
 				const supersededBy = reason.supersededBy ? (reason.supersededBy as NesCompletionItem) : undefined;
 				tracer.trace(`Superseded by: ${supersededBy?.info.requestUuid || 'none'}, was shown: ${item.wasShown}`);
+				if (supersededBy) {
+					/* __GDPR__
+						"supersededInlineEdit" : {
+							"owner": "ulugbekna",
+							"comment": "Tracks when an inline edit was superseded by another edit.",
+							"opportunityId": { "classification": "SystemMetaData", "purpose": "FeatureInsight", "comment": "The opportunity ID of the original inline edit." },
+							"supersededByOpportunityId": { "classification": "SystemMetaData", "purpose": "FeatureInsight", "comment": "The opportunity ID of the inline edit that superseded the original edit." }
+						}
+					*/
+					this._telemetryService.sendMSFTTelemetryEvent('supersededInlineEdit', { opportunityId: item.info.requestUuid, supersededByOpportunityId: supersededBy.info.requestUuid });
+				}
 				this._handleDidIgnoreCompletionItem(item, supersededBy);
 				break;
 			}
@@ -466,7 +470,7 @@ export class InlineCompletionProviderImpl implements InlineCompletionItemProvide
 
 		// Assumption: The user cannot edit the document while the inline edit is being applied
 		let userEdits = StringEdit.empty;
-		softAssert(docAfterEdits === userEdits.apply(item.document.getText()));
+		// softAssert(docAfterEdits === userEdits.apply(item.document.getText())); // TODO@hediet
 
 		const diffedNextEdit = await stringEditFromDiff(docBeforeEdits, docAfterEdits, this._diffService);
 		const recordedEdits = recorder.getEdits();
@@ -611,6 +615,7 @@ function addNotebookTelemetry(document: TextDocument, position: Position, newTex
 	const isNextEditorRangeVisible = nextEditor && nextEditor.visibleRanges.some(range => range.contains(documents[0][1]));
 	const notebookId = getNotebookId(notebook);
 	const lineSuffix = `(${position.line}:${position.character})`;
+	const suggestionLineSuffix = `(->${documents[0][1].start.line}:${documents[0][1].start.character})`;
 	const getCellPrefix = (c: NotebookCell) => {
 		if (c === cell) {
 			return `*`;
@@ -622,7 +627,7 @@ function addNotebookTelemetry(document: TextDocument, position: Position, newTex
 	};
 	const lineCounts = notebook.getCells()
 		.filter(c => c.kind === NotebookCellKind.Code)
-		.map(c => `${getCellPrefix(c)}${c.document.lineCount}${c === cell ? lineSuffix : ''}`).join(',');
+		.map(c => `${getCellPrefix(c)}${c.document.lineCount}${c === cell ? lineSuffix : ''}${c.document === documents[0][0] ? suggestionLineSuffix : ''}`).join(',');
 	telemetryBuilder.
 		setNotebookCellMarkerIndex(cellMarkerIndex)
 		.setNotebookCellMarkerCount(cellMarkerCount)
