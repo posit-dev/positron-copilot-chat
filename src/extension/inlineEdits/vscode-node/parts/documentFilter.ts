@@ -9,6 +9,10 @@ import { IIgnoreService } from '../../../../platform/ignore/common/ignoreService
 import { isNotebookCellOrNotebookChatInput } from '../../../../util/common/notebooks';
 import { derived } from '../../../../util/vs/base/common/observableInternal';
 
+// --- Start Positron ---
+import { PositronInlineCompletionsEnableConfigKey, PositronInlineCompletionsEnableDefault } from '../../common/positronConfig';
+// --- End Positron ---
+
 export class DocumentFilter {
 	private readonly _enabledLanguagesObs;
 	private readonly _ignoreCompletionsDisablement;
@@ -17,7 +21,13 @@ export class DocumentFilter {
 		@IIgnoreService private readonly _ignoreService: IIgnoreService,
 		@IConfigurationService private readonly _configurationService: IConfigurationService
 	) {
-		this._enabledLanguagesObs = this._configurationService.getConfigObservable(ConfigKey.Enable);
+		// --- Start Positron ---
+		// Use Positron's inline completions enable config key instead of Copilot's
+		this._enabledLanguagesObs = this._configurationService.getNonExtensionConfigObservable<{ [key: string]: boolean }>(
+			PositronInlineCompletionsEnableConfigKey,
+			PositronInlineCompletionsEnableDefault
+		);
+		// --- End Positron ---
 		this._ignoreCompletionsDisablement = this._configurationService.getConfigObservable(ConfigKey.Internal.InlineEditsIgnoreCompletionsDisablement);
 	}
 
