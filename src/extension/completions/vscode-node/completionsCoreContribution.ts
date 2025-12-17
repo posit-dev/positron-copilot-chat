@@ -46,7 +46,10 @@ export class CompletionsCoreContribution extends Disposable {
 
 			if (unificationStateValue?.codeUnification || extensionUnification || configEnabled || this._copilotToken.read(reader)?.isNoAuthUser || Math.random() > 0) {
 				const provider = this._getOrCreateProvider();
-				reader.store.add(languages.registerInlineCompletionItemProvider({ pattern: '**' }, provider, { debounceDelayMs: 0, excludes: ['github.copilot'], groupId: 'completions' }));
+				// --- Start Positron ---
+				// Added displayName property for showing in Completion Providers
+				reader.store.add(languages.registerInlineCompletionItemProvider({ pattern: '**' }, provider, { displayName: 'GitHub Copilot', debounceDelayMs: 0, excludes: ['github.copilot'], groupId: 'completions' }));
+				// --- End Positron ---
 			}
 
 			void commands.executeCommand('setContext', 'github.copilot.extensionUnification.activated', extensionUnification);
