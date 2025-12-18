@@ -39,6 +39,10 @@ import { InlineEditLogger } from './parts/inlineEditLogger';
 import { IVSCodeObservableDocument } from './parts/vscodeWorkspace';
 import { toExternalRange } from './utils/translations';
 
+// --- Start Positron ---
+import { PositronInlineCompletionsEnableConfigKey, PositronInlineCompletionsEnableDefault } from '../common/positronConfig';
+// --- End Positron ---
+
 const learnMoreAction: Command = {
 	title: l10n.t('Learn More'),
 	command: learnMoreCommandId,
@@ -122,16 +126,18 @@ export class InlineCompletionProviderImpl implements InlineCompletionItemProvide
 		this._tracer = createTracer(['NES', 'Provider'], (s) => this._logService.trace(s));
 		this._displayNextEditorNES = this._configurationService.getExperimentBasedConfig(ConfigKey.Internal.UseAlternativeNESNotebookFormat, this._expService);
 	}
-
+	// --- Start Positron ---
+	// Use Positron's inline completions enable config key instead of Copilot's
 	// copied from `vscodeWorkspace.ts` `DocumentFilter#_enabledLanguages`
 	private _isCompletionsEnabled(document: TextDocument): boolean {
-		const enabledLanguages = this._configurationService.getConfig(ConfigKey.Enable);
+		const enabledLanguages = this._configurationService.getNonExtensionConfig<{ [key: string]: boolean }>(PositronInlineCompletionsEnableConfigKey) ?? PositronInlineCompletionsEnableDefault;
 		const enabledLanguagesMap = new Map(Object.entries(enabledLanguages));
 		if (!enabledLanguagesMap.has('*')) {
 			enabledLanguagesMap.set('*', false);
 		}
 		return enabledLanguagesMap.has(document.languageId) ? enabledLanguagesMap.get(document.languageId)! : enabledLanguagesMap.get('*')!;
 	}
+	// --- End Positron ---
 
 	public async provideInlineCompletionItems(
 		document: TextDocument,
@@ -141,7 +147,15 @@ export class InlineCompletionProviderImpl implements InlineCompletionItemProvide
 	): Promise<NesCompletionList | undefined> {
 		const tracer = this._tracer.sub(['provideInlineCompletionItems', shortOpportunityId(context.requestUuid)]);
 
+		// --- Start Positron ---
+		// If inline completions are disabled for this language, don't
+		// provide any completions.
 		const isCompletionsEnabled = this._isCompletionsEnabled(document);
+		if (!isCompletionsEnabled) {
+			tracer.returns('inline completions disabled for this language');
+			return undefined;
+		}
+		// --- End Positron ---
 
 		const unification = this._configurationService.getExperimentBasedConfig(ConfigKey.Internal.InlineEditsUnification, this._expService);
 

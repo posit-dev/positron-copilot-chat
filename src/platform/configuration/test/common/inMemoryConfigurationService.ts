@@ -46,11 +46,17 @@ export class InMemoryConfigurationService extends AbstractConfigurationService {
 
 	override setConfig<T>(key: BaseConfig<T>, value: T): Promise<void> {
 		this.overrides.set(key, value);
+		// --- Start Positron ---
+		this._onDidChangeConfiguration.fire({ affectsConfiguration: (k) => k === key.fullyQualifiedId });
+		// --- End Positron ---
 		return Promise.resolve();
 	}
 
 	setNonExtensionConfig<T>(key: string, value: T): Promise<void> {
 		this.nonExtensionOverrides.set(key, value);
+		// --- Start Positron ---
+		this._onDidChangeConfiguration.fire({ affectsConfiguration: (k) => k === key });
+		// --- End Positron ---
 		return Promise.resolve();
 	}
 

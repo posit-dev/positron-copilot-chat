@@ -9,10 +9,6 @@ import { AuthPermissionMode, AuthProviderId, ConfigKey, IConfigurationService } 
 import { GITHUB_SCOPE_ALIGNED, GITHUB_SCOPE_READ_USER, GITHUB_SCOPE_USER_EMAIL, MinimalModeError } from '../common/authentication';
 import { mixin } from '../../../util/vs/base/common/objects';
 
-// --- Start Positron ---
-import { getFileBasedAuthSession } from './fileBasedAuth';
-// --- End Positron ---
-
 export const SESSION_LOGIN_MESSAGE = 'You are not signed in to GitHub. Please sign in to use Copilot.';
 // These types are subsets of the "real" types AuthenticationSessionAccountInformation and
 // AuthenticationSession. They allow us to use the type system to validate which fields
@@ -73,15 +69,6 @@ async function getAuthSession(providerId: string, defaultScopes: string[], getSi
  * @deprecated use `IAuthenticationService` instead
  */
 export function getAnyAuthSession(configurationService: IConfigurationService, options?: AuthenticationGetSessionOptions): Promise<AuthenticationSession | undefined> {
-	// --- Start Positron ---
-	// First, try to get authentication from the file-based GitHub Copilot apps.json
-	const fileBasedSession = getFileBasedAuthSession();
-	if (fileBasedSession) {
-		return Promise.resolve(fileBasedSession);
-	}
-
-	// Fall back to VS Code authentication system
-	// --- End Positron ---
 
 	const providerId = authProviderId(configurationService);
 
