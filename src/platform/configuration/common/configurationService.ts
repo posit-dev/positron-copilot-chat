@@ -117,6 +117,16 @@ export interface IConfigurationService {
 	 */
 	getNonExtensionConfig<T>(configKey: string): T | undefined;
 
+	// --- Start Positron ---
+
+	/**
+	 * Gets an observable for a configuration value that is not in the Copilot namespace.
+	 * @param configKey The fully qualified config key to look up (e.g., 'positron.assistant.inlineCompletions.enable')
+	 * @param defaultValue The default value to use if the config is not set
+	 */
+	getNonExtensionConfigObservable<T>(configKey: string, defaultValue: T): IObservable<T>;
+	// --- End Positron ---
+
 	/**
 	 * Sets user configuration for a key in vscode.
 	 */
@@ -259,6 +269,29 @@ export abstract class AbstractConfigurationService extends Disposable implements
 	}
 
 	private observables = new Map<string, IObservable<any>>();
+
+	// --- Start Positron ---
+	public getNonExtensionConfigObservable<T>(configKey: string, defaultValue: T): IObservable<T> {
+		return this._getNonExtensionObservable(configKey, defaultValue);
+	}
+
+	private _getNonExtensionObservable<T>(configKey: string, defaultValue: T): IObservable<T> {
+		let observable = this.observables.get(configKey);
+		if (!observable) {
+			observable = observableFromEventOpts(
+				{ debugName: () => `Non-Extension Configuration Key "${configKey}"` },
+				(handleChange) => this._register(this.onDidChangeConfiguration(e => {
+					if (e.affectsConfiguration(configKey)) {
+						handleChange(e);
+					}
+				})),
+				() => this.getNonExtensionConfig(configKey) ?? defaultValue
+			);
+			this.observables.set(configKey, observable);
+		}
+		return observable;
+	}
+	// --- End Positron ---
 
 	private _getObservable_$show2FramesUp<T>(key: BaseConfig<T>, getValue: () => T): IObservable<T> {
 		let observable = this.observables.get(key.id);
@@ -739,6 +772,9 @@ export namespace ConfigKey {
 		export const Gpt5AlternativePatch = defineExpSetting<boolean>('chat.advanced.gpt5AlternativePatch', false);
 	}
 
+	// --- Start Positron ---
+	// Note: Not used in Positron, but kept here to avoid breaking changes
+	// --- End Positron ---
 	export const Enable = defineSetting<{ [key: string]: boolean }>('enable', {
 		"*": true,
 		"plaintext": false,
