@@ -5,16 +5,17 @@
 
 import { Readable } from 'stream';
 import { IEnvService } from '../../env/common/envService';
-import { FetchOptions, IAbortController, Response } from '../common/fetcherService';
-import { IFetcher, userAgentLibraryHeader } from '../common/networking';
 import { collectSingleLineErrorMessage } from '../../log/common/logService';
+import { FetcherId, FetchOptions, IAbortController, PaginationOptions, Response } from '../common/fetcherService';
+import { IFetcher, userAgentLibraryHeader } from '../common/networking';
 
 export abstract class BaseFetchFetcher implements IFetcher {
 
 	constructor(
 		private readonly _fetchImpl: typeof fetch | typeof import('electron').net.fetch,
 		private readonly _envService: IEnvService,
-		private readonly userAgentLibraryUpdate?: (original: string) => string,
+		private readonly userAgentLibraryUpdate: ((original: string) => string) | undefined,
+		private readonly _fetcherId: FetcherId,
 	) {
 	}
 
@@ -46,7 +47,38 @@ export abstract class BaseFetchFetcher implements IFetcher {
 			throw new Error(`Illegal arguments! 'signal' must be an instance of AbortSignal!`);
 		}
 
-		return this._fetch(url, method, headers, body, signal);
+		try {
+			return await this._fetch(url, method, headers, body, signal);
+		} catch (e) {
+			e.fetcherId = this._fetcherId;
+			throw e;
+		}
+	}
+
+	async fetchWithPagination<T>(baseUrl: string, options: PaginationOptions<T>): Promise<T[]> {
+		const items: T[] = [];
+		const pageSize = options.pageSize ?? 20;
+		let page = options.startPage ?? 1;
+		let hasNextPage = false;
+
+		do {
+			const url = options.buildUrl(baseUrl, pageSize, page);
+			const response = await this.fetch(url, options);
+
+			if (!response.ok) {
+				// Return what we've collected so far if request fails
+				return items;
+			}
+
+			const data = await response.json();
+			const pageItems = options.getItemsFromResponse(data);
+			items.push(...pageItems);
+
+			hasNextPage = pageItems.length === pageSize;
+			page++;
+		} while (hasNextPage);
+
+		return items;
 	}
 
 	private async _fetch(url: string, method: 'GET' | 'POST', headers: { [name: string]: string }, body: string | undefined, signal: AbortSignal): Promise<Response> {
@@ -62,7 +94,8 @@ export abstract class BaseFetchFetcher implements IFetcher {
 					return Readable.from([]);
 				}
 				return Readable.fromWeb(resp.body);
-			}
+			},
+			this._fetcherId
 		);
 	}
 

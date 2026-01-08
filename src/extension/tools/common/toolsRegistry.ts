@@ -64,18 +64,23 @@ export interface ICopilotToolExtension<T> {
 	alternativeDefinition?(tool: vscode.LanguageModelToolInformation, endpoint?: IChatEndpoint): vscode.LanguageModelToolInformation;
 }
 
-export interface ICopilotTool<T> extends vscode.LanguageModelTool<T>, ICopilotToolExtension<T> {
+export interface ICopilotTool<T> extends ICopilotToolExtension<T> {
+	invoke?: vscode.LanguageModelTool<T>['invoke'];
+	prepareInvocation?: vscode.LanguageModelTool<T>['prepareInvocation'];
 }
 
+export function isVscodeLanguageModelTool(tool: ICopilotTool<unknown>): tool is vscode.LanguageModelTool<unknown> {
+	return typeof tool.invoke === 'function';
+}
 
 export interface ICopilotToolCtor {
 	readonly toolName: ToolName;
-	new(...args: any[]): ICopilotTool<any>;
+	new(...args: never[]): ICopilotTool<unknown>;
 }
 
 export interface ICopilotToolExtensionCtor {
 	readonly toolName: ToolName;
-	new(...args: any[]): ICopilotToolExtension<any>;
+	new(...args: never[]): ICopilotToolExtension<unknown>;
 }
 
 export const ToolRegistry = new class {
@@ -83,8 +88,7 @@ export const ToolRegistry = new class {
 	// Don't make the tools private as it breaks compilation inside Positron.
 	_tools: ICopilotToolCtor[] = [];
 	// --- End Positron ---
-
-	private _toolExtensions: ICopilotToolExtensionCtor[] = [];
+	private _toolExtensions: Array<ICopilotToolExtensionCtor> = [];
 
 	public registerTool(tool: ICopilotToolCtor) {
 		this._tools.push(tool);

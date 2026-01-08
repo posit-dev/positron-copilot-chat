@@ -10,6 +10,7 @@ import { ICAPIClientService } from '../../endpoint/common/capiClient';
 import { IDomainService } from '../../endpoint/common/domainService';
 import { IEnvService } from '../../env/common/envService';
 import { IFetcherService } from '../../networking/common/fetcherService';
+import { FetcherService } from '../../networking/vscode-node/fetcherServiceImpl';
 import { BaseTelemetryService } from '../common/baseTelemetryService';
 import { ITelemetryUserConfig } from '../common/telemetry';
 import { GitHubTelemetrySender } from './githubTelemetrySender';
@@ -57,6 +58,10 @@ export class TelemetryService extends BaseTelemetryService {
 			estrictedGHAIKey,
 			tokenStore
 		);
-		super(tokenStore, microsoftTelemetrySender, ghTelemetrySender);
+		super(tokenStore, capiClientService, microsoftTelemetrySender, ghTelemetrySender);
+
+		if (fetcherService instanceof FetcherService) {
+			fetcherService.setTelemetryService(this);
+		}
 	}
 }

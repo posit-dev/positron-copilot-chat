@@ -6,7 +6,6 @@
 import { promises as fs } from 'fs';
 import { Terminal, TerminalOptions, ThemeIcon, ViewColumn, workspace } from 'vscode';
 import { IAuthenticationService } from '../../../platform/authentication/common/authentication';
-import { ConfigKey, IConfigurationService } from '../../../platform/configuration/common/configurationService';
 import { IEnvService } from '../../../platform/env/common/envService';
 import { IVSCodeExtensionContext } from '../../../platform/extContext/common/extensionContext';
 import { ILogService } from '../../../platform/log/common/logService';
@@ -48,7 +47,6 @@ export class CopilotCLITerminalIntegration extends Disposable implements ICopilo
 	constructor(
 		@IVSCodeExtensionContext private readonly context: IVSCodeExtensionContext,
 		@IAuthenticationService private readonly _authenticationService: IAuthenticationService,
-		@IConfigurationService private readonly configurationService: IConfigurationService,
 		@ITerminalService private readonly terminalService: ITerminalService,
 		@IEnvService private readonly envService: IEnvService,
 		@ILogService logService: ILogService
@@ -59,10 +57,6 @@ export class CopilotCLITerminalIntegration extends Disposable implements ICopilo
 	}
 
 	private async initialize(): Promise<void> {
-		const enabled = this.configurationService.getConfig(ConfigKey.Internal.CopilotCLIEnabled);
-		if (!enabled) {
-			return;
-		}
 		const globalStorageUri = this.context.globalStorageUri;
 		if (!globalStorageUri) {
 			// globalStorageUri is not available in extension tests
@@ -161,8 +155,8 @@ ELECTRON_RUN_AS_NODE=1 "${process.execPath}" "${path.join(storageLocation, COPIL
 	private async sendCommandToTerminal(terminal: Terminal, command: string, waitForPythonActivation: boolean, shellInfo: IShellInfo | undefined = undefined): Promise<void> {
 		// Wait for shell integration to be available
 		const shellIntegrationTimeout = 3000;
-		let shellIntegrationAvailable = false;
-		const integrationPromise = new Promise<void>((resolve) => {
+		let shellIntegrationAvailable = terminal.shellIntegration ? true : false;
+		const integrationPromise = shellIntegrationAvailable ? Promise.resolve() : new Promise<void>((resolve) => {
 			const disposable = this._register(this.terminalService.onDidChangeTerminalShellIntegration(e => {
 				if (e.terminal === terminal && e.shellIntegration) {
 					shellIntegrationAvailable = true;
@@ -187,7 +181,7 @@ ELECTRON_RUN_AS_NODE=1 "${process.execPath}" "${path.join(storageLocation, COPIL
 			await new Promise<void>(resolve => this._register(disposableTimeout(resolve, delay))); // Wait a bit to ensure the terminal is ready
 		}
 
-		if (shellIntegrationAvailable && terminal.shellIntegration) {
+		if (terminal.shellIntegration) {
 			terminal.shellIntegration.executeCommand(command);
 		} else {
 			terminal.sendText(command);

@@ -99,7 +99,7 @@ export class GitServiceImpl extends Disposable implements IGitService {
 		return this._isInitialized.get();
 	}
 
-	async getRepository(uri: URI): Promise<RepoContext | undefined> {
+	async getRepository(uri: URI, forceOpen = true): Promise<RepoContext | undefined> {
 		const gitAPI = this.gitExtensionService.getExtensionApi();
 		if (!gitAPI) {
 			return undefined;
@@ -110,11 +110,20 @@ export class GitServiceImpl extends Disposable implements IGitService {
 			uri = vscode.Uri.parse(uri.toString());
 		}
 
+		// Ensure that the initial
+		// repository discovery is
+		// finished
+		await this.initialize();
+
 		// Query opened repositories
 		let repository = gitAPI.getRepository(uri);
 		if (repository) {
 			await this.waitForRepositoryState(repository);
 			return GitServiceImpl.repoToRepoContext(repository);
+		}
+
+		if (!forceOpen) {
+			return undefined;
 		}
 
 		// Open repository
@@ -214,7 +223,7 @@ export class GitServiceImpl extends Disposable implements IGitService {
 		if (!repository?.diffIndexWithHEADShortStats) {
 			return undefined;
 		}
-		return await repository?.diffIndexWithHEADShortStats();
+		return await repository?.diffIndexWithHEADShortStats(uri.fsPath);
 	}
 
 	async fetch(uri: vscode.Uri, remote?: string, ref?: string, depth?: number): Promise<void> {
@@ -227,6 +236,24 @@ export class GitServiceImpl extends Disposable implements IGitService {
 		const gitAPI = this.gitExtensionService.getExtensionApi();
 		const repository = gitAPI?.getRepository(uri);
 		return repository?.getMergeBase(ref1, ref2);
+	}
+
+	async createWorktree(uri: URI, options?: { path?: string; commitish?: string; branch?: string }): Promise<string | undefined> {
+		const gitAPI = this.gitExtensionService.getExtensionApi();
+		const repository = gitAPI?.getRepository(uri);
+		return await repository?.createWorktree(options);
+	}
+
+	async deleteWorktree(uri: URI, path: string, options?: { force?: boolean }): Promise<void> {
+		const gitAPI = this.gitExtensionService.getExtensionApi();
+		const repository = gitAPI?.getRepository(uri);
+		return await repository?.deleteWorktree(path, options);
+	}
+
+	async migrateChanges(uri: URI, sourceRepositoryUri: URI, options?: { confirmation?: boolean; deleteFromSource?: boolean; untracked?: boolean }): Promise<void> {
+		const gitAPI = this.gitExtensionService.getExtensionApi();
+		const repository = gitAPI?.getRepository(uri);
+		return await repository?.migrateChanges(sourceRepositoryUri.fsPath, options);
 	}
 
 	async initialize(): Promise<void> {
