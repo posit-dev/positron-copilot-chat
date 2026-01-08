@@ -25,7 +25,7 @@ import { DebugRecorder } from './debugRecorder';
 import { INesConfigs } from './nesConfigs';
 import { INextEditDisplayLocation, INextEditResult } from './nextEditResult';
 
-export type NextEditTelemetryStatus = 'new' | 'requested' | `noEdit:${string}` | 'docChanged' | 'emptyEdits' | 'previouslyRejected' | 'previouslyRejectedCache' | 'accepted' | 'notAccepted' | 'rejected';
+export type NextEditTelemetryStatus = 'new' | 'requested' | `noEdit:${string}` | 'docChanged' | 'emptyEdits' | 'emptyEditsButHasNextCursorPosition' | 'previouslyRejected' | 'previouslyRejectedCache' | 'accepted' | 'notAccepted' | 'rejected';
 
 export type NesAcceptance = 'accepted' | 'notAccepted' | 'rejected';
 
@@ -846,7 +846,7 @@ export class TelemetrySender implements IDisposable {
 				notebookType,
 				notebookId,
 				notebookCellLines,
-				nextCursorLineError: telemetry.nextCursorLineError,
+				nextCursorLineError: telemetry.nextCursorPrediction?.nextCursorLineError,
 			},
 			{
 				requestN,
@@ -901,7 +901,7 @@ export class TelemetrySender implements IDisposable {
 				diagnosticDistanceToUnknownDiagnostic: diagnosticDistanceToUnknownDiagnostic,
 				diagnosticDistanceToAlternativeDiagnostic: diagnosticDistanceToAlternativeDiagnostic,
 				diagnosticHasAlternativeDiagnosticForSameRange: this._boolToNum(diagnosticHasAlternativeDiagnosticForSameRange),
-				nextCursorLineDistance: telemetry.nextCursorLineDistance,
+				nextCursorLineDistance: telemetry.nextCursorPrediction?.nextCursorLineDistance,
 			}
 		);
 	}

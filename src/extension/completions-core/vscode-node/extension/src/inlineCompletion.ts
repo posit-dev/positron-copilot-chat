@@ -19,11 +19,10 @@ import {
 import { Disposable } from '../../../../../util/vs/base/common/lifecycle';
 import { IInstantiationService, ServicesAccessor } from '../../../../../util/vs/platform/instantiation/common/instantiation';
 import { ICompletionsTelemetryService } from '../../bridge/src/completionsTelemetryServiceBridge';
-import { ICompletionsBuildInfoService } from '../../lib/src/config';
+import { BuildInfo } from '../../lib/src/config';
 import { CopilotConfigPrefix } from '../../lib/src/constants';
 import { handleException } from '../../lib/src/defaultHandlers';
 import { Logger } from '../../lib/src/logger';
-import { telemetry, TelemetryData } from '../../lib/src/telemetry';
 import { Deferred } from '../../lib/src/util/async';
 import { isCompletionEnabledForDocument } from './config';
 import { CopilotCompletionFeedbackTracker, sendCompletionFeedbackCommand } from './copilotCompletionFeedbackTracker';
@@ -58,9 +57,11 @@ export class CopilotInlineCompletionItemProvider extends Disposable implements I
 	initFallbackContext?: Promise<void>;
 	pendingRequests: Set<Promise<unknown>> = new Set();
 
+	public onDidChange = undefined;
+	public handleListEndOfLifetime: InlineCompletionItemProvider['handleListEndOfLifetime'] = undefined;
+
 	constructor(
 		@IInstantiationService private readonly instantiationService: IInstantiationService,
-		@ICompletionsBuildInfoService private readonly buildInfoService: ICompletionsBuildInfoService,
 		@ICompletionsTelemetryService private readonly telemetryService: ICompletionsTelemetryService,
 		@ICompletionsExtensionStatus private readonly extensionStatusService: ICompletionsExtensionStatus,
 	) {
@@ -84,21 +85,11 @@ export class CopilotInlineCompletionItemProvider extends Disposable implements I
 		position: Position,
 		context: InlineCompletionContext,
 		token: CancellationToken
-	): Promise<InlineCompletionItem[] | InlineCompletionList | undefined> {
-		this.instantiationService.invokeFunction(telemetry, 'codeUnification.completions.invoked', TelemetryData.createAndMarkAsIssued({
-			languageId: doc.languageId,
-			lineCount: String(doc.lineCount),
-			currentLine: String(position.line),
-			isCycling: String(context.triggerKind === InlineCompletionTriggerKind.Invoke),
-			completionsActive: String(context.selectedCompletionInfo !== undefined),
-		}));
-
+	): Promise<InlineCompletionList | undefined> {
 		try {
 			return await this._provideInlineCompletionItems(doc, position, context, token);
 		} catch (e) {
 			this.telemetryService.sendGHTelemetryException(e, 'codeUnification.completions.exception');
-		} finally {
-			this.instantiationService.invokeFunction(telemetry, 'codeUnification.completions.returned', TelemetryData.createAndMarkAsIssued());
 		}
 	}
 
@@ -107,7 +98,7 @@ export class CopilotInlineCompletionItemProvider extends Disposable implements I
 		position: Position,
 		context: InlineCompletionContext,
 		token: CancellationToken
-	): Promise<InlineCompletionItem[] | InlineCompletionList | undefined> {
+	): Promise<InlineCompletionList | undefined> {
 		const pendingRequestDeferred = new Deferred();
 		this.pendingRequests.add(pendingRequestDeferred.promise);
 
@@ -125,7 +116,7 @@ export class CopilotInlineCompletionItemProvider extends Disposable implements I
 		// match it, VS Code won't show it to the user unless the completion dropdown is dismissed. Historically we've
 		// chosen to favor completion quality, but this option allows opting into or out of generating a completion that
 		// VS Code will actually show.
-		if (!copilotConfig.get('respectSelectedCompletionInfo', quickSuggestionsDisabled() || this.buildInfoService.isPreRelease())) {
+		if (!copilotConfig.get('respectSelectedCompletionInfo', quickSuggestionsDisabled() || BuildInfo.isPreRelease())) {
 			context = { ...context, selectedCompletionInfo: undefined };
 		}
 		try {

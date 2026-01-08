@@ -2,7 +2,7 @@
  *  Copyright (c) Microsoft Corporation. All rights reserved.
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
-import { commands, env, UIKind } from 'vscode';
+import { commands, env } from 'vscode';
 import { ILogService } from '../../../platform/log/common/logService';
 import { outputChannel } from '../../../platform/log/vscode/outputChannelLogTarget';
 import { DisposableStore, IDisposable } from '../../../util/vs/base/common/lifecycle';
@@ -12,6 +12,7 @@ import { IInstantiationService, ServicesAccessor } from '../../../util/vs/platfo
 import { ServiceCollection } from '../../../util/vs/platform/instantiation/common/serviceCollection';
 import { CompletionsTelemetryServiceBridge, ICompletionsTelemetryService } from './bridge/src/completionsTelemetryServiceBridge';
 import { LoggingCitationManager } from './extension/src/codeReferencing/citationManager';
+import { CompletionsObservableWorkspace } from './extension/src/completionsObservableWorkspace';
 import { disableCompletions, enableCompletions, toggleCompletions, VSCodeConfigProvider, VSCodeEditorInfo } from './extension/src/config';
 import { CMDDisableCompletionsChat, CMDDisableCompletionsClient, CMDEnableCompletionsChat, CMDEnableCompletionsClient, CMDOpenDocumentationClient, CMDOpenLogsClient, CMDOpenModelPickerChat, CMDOpenModelPickerClient, CMDToggleCompletionsChat, CMDToggleCompletionsClient, CMDToggleStatusMenuChat, CMDToggleStatusMenuClient } from './extension/src/constants';
 import { contextProviderMatch } from './extension/src/contextProviderMatch';
@@ -27,8 +28,8 @@ import { ExtensionTextDocumentManager } from './extension/src/textDocumentManage
 import { CopilotTokenManagerImpl, ICompletionsCopilotTokenManager } from './lib/src/auth/copilotTokenManager';
 import { ICompletionsCitationManager } from './lib/src/citationManager';
 import { CompletionNotifier, ICompletionsNotifierService } from './lib/src/completionNotifier';
-import { CompletionsObservableWorkspace, ICompletionsObservableWorkspace } from './lib/src/completionsObservableWorkspace';
-import { BuildInfo, EditorSession, ICompletionsBuildInfoService, ICompletionsConfigProvider, ICompletionsEditorAndPluginInfo, ICompletionsEditorSessionService } from './lib/src/config';
+import { ICompletionsObservableWorkspace } from './lib/src/completionsObservableWorkspace';
+import { ICompletionsConfigProvider, ICompletionsEditorAndPluginInfo } from './lib/src/config';
 import { registerDocumentTracker } from './lib/src/documentTracker';
 import { ICompletionsUserErrorNotifierService, UserErrorNotifier } from './lib/src/error/userErrorNotifier';
 import { setupCompletionsExperimentationService } from './lib/src/experiments/defaultExpFilters';
@@ -88,13 +89,12 @@ export function createContext(serviceAccessor: ServicesAccessor, store: Disposab
 	});
 
 	serviceCollection.set(ICompletionsRuntimeModeService, RuntimeMode.fromEnvironment(false));
-	serviceCollection.set(ICompletionsBuildInfoService, new BuildInfo());
 	serviceCollection.set(ICompletionsCacheService, new CompletionsCache());
 	serviceCollection.set(ICompletionsConfigProvider, new VSCodeConfigProvider());
 	serviceCollection.set(ICompletionsLastGhostText, new LastGhostText());
 	serviceCollection.set(ICompletionsCurrentGhostText, new CurrentGhostText());
 	serviceCollection.set(ICompletionsSpeculativeRequestCache, new SpeculativeRequestCache());
-	serviceCollection.set(ICompletionsNotificationSender, new ExtensionNotificationSender());
+	serviceCollection.set(ICompletionsNotificationSender, new SyncDescriptor(ExtensionNotificationSender));
 	serviceCollection.set(ICompletionsEditorAndPluginInfo, new VSCodeEditorInfo());
 	serviceCollection.set(ICompletionsExtensionStatus, new CopilotExtensionStatus());
 	serviceCollection.set(ICompletionsFeaturesService, new SyncDescriptor(Features));
@@ -103,7 +103,6 @@ export function createContext(serviceAccessor: ServicesAccessor, store: Disposab
 	serviceCollection.set(ICompletionsCopilotTokenManager, new SyncDescriptor(CopilotTokenManagerImpl, [false]));
 	serviceCollection.set(ICompletionsTextDocumentManagerService, new SyncDescriptor(ExtensionTextDocumentManager));
 	serviceCollection.set(ICompletionsFileReaderService, new SyncDescriptor(FileReader));
-	serviceCollection.set(ICompletionsEditorSessionService, new EditorSession(env.sessionId, env.machineId, env.remoteName, uiKindToString(env.uiKind)));
 	serviceCollection.set(ICompletionsBlockModeConfig, new SyncDescriptor(ConfigBlockModeConfig));
 	serviceCollection.set(ICompletionsTelemetryService, new SyncDescriptor(CompletionsTelemetryServiceBridge));
 	serviceCollection.set(ICompletionsTelemetryUserConfigService, new SyncDescriptor(TelemetryUserConfig));
@@ -120,13 +119,7 @@ export function createContext(serviceAccessor: ServicesAccessor, store: Disposab
 	serviceCollection.set(ICompletionsPromiseQueueService, new PromiseQueue());
 	serviceCollection.set(ICompletionsCitationManager, new SyncDescriptor(LoggingCitationManager));
 	serviceCollection.set(ICompletionsContextProviderService, new ContextProviderStatistics());
-
-	try {
-		serviceCollection.set(ICompletionsPromptFactoryService, new SyncDescriptor(CompletionsPromptFactory));
-	} catch (e) {
-		console.log(e);
-	}
-
+	serviceCollection.set(ICompletionsPromptFactoryService, new SyncDescriptor(CompletionsPromptFactory));
 	serviceCollection.set(ICompletionsFetcherService, new SyncDescriptor(CompletionsFetcher));
 	serviceCollection.set(ICompletionsDefaultContextProviders, new DefaultContextProvidersContainer());
 
@@ -149,6 +142,7 @@ export function setup(serviceAccessor: ServicesAccessor, disposables: Disposable
 	// Register the context providers enabled by default.
 	const defaultContextProviders = serviceAccessor.get(ICompletionsDefaultContextProviders);
 	defaultContextProviders.add('ms-vscode.cpptools');
+	defaultContextProviders.add('promptfile-ai-context-provider');
 
 	disposables.add(setupCompletionsExperimentationService(serviceAccessor));
 }
@@ -258,15 +252,6 @@ function registerDiagnosticCommands(accessor: ServicesAccessor): IDisposable {
 	}));
 
 	return disposables;
-}
-
-function uiKindToString(uiKind: UIKind): 'desktop' | 'web' {
-	switch (uiKind) {
-		case UIKind.Desktop:
-			return 'desktop';
-		case UIKind.Web:
-			return 'web';
-	}
 }
 
 export function registerCommandWrapper(accessor: ServicesAccessor, command: string, fn: (...args: unknown[]) => unknown): IDisposable {

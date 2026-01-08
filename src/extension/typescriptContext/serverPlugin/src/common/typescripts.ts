@@ -20,7 +20,7 @@ namespace tss {
 		getSymbolId(symbol: tt.Symbol): SymbolId;
 	} & typeof ts;
 
-	const its = ts as any as InternalTypeScript;
+	const its = ts as unknown as InternalTypeScript;
 
 	export const getTokenAtPosition: (sourceFile: tt.SourceFile, position: number) => tt.Node = its.getTokenAtPosition;
 	export const getTouchingToken: (sourceFile: tt.SourceFile, position: number, includePrecedingTokenAtEndPosition?: (n: tt.Node) => boolean) => tt.Node = its.getTouchingToken;
@@ -295,6 +295,20 @@ namespace tss {
 		}
 	}
 
+	export namespace TypeChecker {
+
+		interface InternalTypeChecker extends tt.TypeChecker {
+			getAccessibleSymbolChain(symbol: tt.Symbol, enclosingDeclaration: tt.Node | undefined, meaning: tt.SymbolFlags, useOnlyExternalAliasing: boolean): tt.Symbol[] | undefined;
+		}
+		export function getAccessibleSymbolChain(typeChecker: tt.TypeChecker, symbol: tt.Symbol, enclosingDeclaration: tt.Node | undefined, meaning: tt.SymbolFlags, useOnlyExternalAliasing: boolean): tt.Symbol[] | undefined {
+			const internalTypeChecker = typeChecker as InternalTypeChecker;
+			if (typeof internalTypeChecker.getAccessibleSymbolChain !== 'function') {
+				return undefined;
+			}
+			return internalTypeChecker.getAccessibleSymbolChain(symbol, enclosingDeclaration, meaning, useOnlyExternalAliasing);
+		}
+	}
+
 	export namespace Types {
 
 		export function isIntersection(type: tt.Type): type is tt.IntersectionType {
@@ -501,6 +515,10 @@ namespace tss {
 			return symbol !== undefined && (symbol.getFlags() & ts.SymbolFlags.ValueModule) !== 0;
 		}
 
+		public static isNamespaceModule(symbol: tt.Symbol | undefined): boolean {
+			return symbol !== undefined && (symbol.getFlags() & ts.SymbolFlags.NamespaceModule) !== 0;
+		}
+
 		public static isEnum(symbol: tt.Symbol | undefined): boolean {
 			return symbol !== undefined && (symbol.getFlags() & ts.SymbolFlags.Enum) !== 0;
 		}
@@ -547,7 +565,7 @@ namespace tss {
 			if (this.internalSymbolNames === undefined) {
 				this.internalSymbolNames = new Set();
 				for (const item in ts.InternalSymbolName) {
-					this.internalSymbolNames.add((ts.InternalSymbolName as any)[item]);
+					this.internalSymbolNames.add((ts.InternalSymbolName as Record<string, string>)[item]);
 				}
 			}
 			return this.internalSymbolNames.has(symbol.escapedName as string);

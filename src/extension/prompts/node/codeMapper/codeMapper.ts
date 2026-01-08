@@ -314,7 +314,7 @@ export class CodeMapper {
 		this.gpt4oProxyEndpoint = this.experimentationService.hasTreatments().then(() => this.instantiationService.createInstance(Proxy4oEndpoint));
 		this.shortIAEndpoint = this.experimentationService.hasTreatments().then(() => this.instantiationService.createInstance(ProxyInstantApplyShortEndpoint));
 
-		this.shortContextLimit = configurationService.getExperimentBasedConfig<number>(ConfigKey.Internal.InstantApplyShortContextLimit, experimentationService) ?? 8000;
+		this.shortContextLimit = configurationService.getExperimentBasedConfig<number>(ConfigKey.Advanced.InstantApplyShortContextLimit, experimentationService) ?? 8000;
 	}
 
 	public async mapCode(request: ICodeMapperRequestInput, resultStream: MappedEditsResponseStream, telemetryInfo: ICodeMapperTelemetryInfo | undefined, token: CancellationToken): Promise<CodeMapperOutcome | undefined> {
@@ -391,7 +391,7 @@ export class CodeMapper {
 			if (fetchResult.type === ChatFetchResponseType.Canceled) {
 				return undefined;
 			}
-			const errorDetails = getErrorDetailsFromChatFetchError(fetchResult, (await this.authenticationService.getCopilotToken()).copilotPlan);
+			const errorDetails = getErrorDetailsFromChatFetchError(fetchResult, await this.endpointProvider.getChatEndpoint('copilot-base'), (await this.authenticationService.getCopilotToken()).copilotPlan);
 			result = createOutcome([{ label: errorDetails.message, message: `request ${fetchResult.type}`, severity: 'error' }], errorDetails);
 		}
 		if (result.annotations.length || result.errorDetails) {
