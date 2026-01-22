@@ -44,5 +44,10 @@ coverage/
 # Base cache database (GC mode)
 test/simulation/cache/_base.sqlite
 
+# --- Start Positron ---
 test/aml/out
 src/extension/completions-core
+# --- End Positron ---
+
+# Ignore files in huksy (else we always end up with files when creating worktrees)
+.husky/_/

@@ -5,6 +5,13 @@
 
 export enum JointCompletionsProviderStrategy {
 	Regular = 'regular',
+	CursorEndOfLine = 'cursorEndOfLine',
+}
+
+export enum JointCompletionsProviderTriggerChangeStrategy {
+	NoTriggerOnRequestInFlight = 'noTriggerOnRequestInFlight',
+	NoTriggerOnCompletionsRequestInFlight = 'noTriggerOnCompletionsRequestInFlight',
+	AlwaysTrigger = 'alwaysTrigger',
 }
 
 export enum JointCompletionsProviderTriggerChangeStrategy {
