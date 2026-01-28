@@ -112,7 +112,7 @@ export class ToolsService extends BaseToolsService {
 			const positronEnabledTools = api.getEnabledTools(request, this.tools);
 			// Compute the set of tools that were disabled
 			const positronDisabledTools = this.tools.filter(tool => !positronEnabledTools.includes(tool.name)).map(tool => tool.name);
-			this.logService.logger.debug(`Disabling Positron tools: ${positronDisabledTools.join(', ')}`);
+			this.logService.debug(`Disabling Positron tools: ${positronDisabledTools.join(', ')}`);
 			enabledTools = positronEnabledTools;
 		}
 		// --- End Positron ---
