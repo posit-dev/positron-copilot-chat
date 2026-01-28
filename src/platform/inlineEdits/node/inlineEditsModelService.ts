@@ -100,8 +100,6 @@ export class InlineEditsModelService extends Disposable implements IInlineEditsM
 
 		const tracer = this._tracer.sub('constructor');
 
-		this._undesiredModelsManager = new UndesiredModels.Manager(this._vscodeExtensionContext);
-
 		this._modelsObs = derived((reader) => {
 			tracer.trace('computing models');
 			return this.aggregateModels({
@@ -447,4 +445,3 @@ export namespace UndesiredModels {
 		}
 	}
 }
-

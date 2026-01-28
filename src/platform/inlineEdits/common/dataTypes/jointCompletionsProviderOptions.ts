@@ -13,9 +13,3 @@ export enum JointCompletionsProviderTriggerChangeStrategy {
 	NoTriggerOnCompletionsRequestInFlight = 'noTriggerOnCompletionsRequestInFlight',
 	AlwaysTrigger = 'alwaysTrigger',
 }
-
-export enum JointCompletionsProviderTriggerChangeStrategy {
-	NoTriggerOnRequestInFlight = 'noTriggerOnRequestInFlight',
-	NoTriggerOnCompletionsRequestInFlight = 'noTriggerOnCompletionsRequestInFlight',
-	AlwaysTrigger = 'alwaysTrigger',
-}
