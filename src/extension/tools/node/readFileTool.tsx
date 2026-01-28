@@ -7,6 +7,7 @@ import { BasePromptElementProps, PromptElement, PromptElementProps, PromptRefere
 import type * as vscode from 'vscode';
 import { ConfigKey, IConfigurationService } from '../../../platform/configuration/common/configurationService';
 import { ObjectJsonSchema } from '../../../platform/configuration/common/jsonSchema';
+import { ICustomInstructionsService } from '../../../platform/customInstructions/common/customInstructionsService';
 import { NotebookDocumentSnapshot } from '../../../platform/editing/common/notebookDocumentSnapshot';
 import { TextDocumentSnapshot } from '../../../platform/editing/common/textDocumentSnapshot';
 import { IEndpointProvider } from '../../../platform/endpoint/common/endpointProvider';
@@ -25,7 +26,8 @@ import { renderPromptElementJSON } from '../../prompts/node/base/promptRenderer'
 import { CodeBlock } from '../../prompts/node/panel/safeElements';
 import { ToolName } from '../common/toolNames';
 import { ICopilotTool, ToolRegistry } from '../common/toolsRegistry';
-import { assertFileOkForTool, formatUriForFileWidget, resolveToolInputPath } from './toolUtils';
+import { formatUriForFileWidget } from '../common/toolUtils';
+import { assertFileOkForTool, resolveToolInputPath } from './toolUtils';
 
 export const readFileV2Description: vscode.LanguageModelToolInformation = {
 	name: ToolName.ReadFile,
@@ -117,16 +119,18 @@ export class ReadFileTool implements ICopilotTool<ReadFileParams> {
 		@ITelemetryService private readonly telemetryService: ITelemetryService,
 		@IConfigurationService private readonly configurationService: IConfigurationService,
 		@IExperimentationService private readonly experimentationService: IExperimentationService,
+		@ICustomInstructionsService private readonly customInstructionsService: ICustomInstructionsService,
 	) { }
 
 	async invoke(options: vscode.LanguageModelToolInvocationOptions<ReadFileParams>, token: vscode.CancellationToken) {
 		let ranges: IParamRanges | undefined;
+		let uri: URI | undefined;
 		try {
-			const uri = resolveToolInputPath(options.input.filePath, this.promptPathRepresentationService);
+			uri = resolveToolInputPath(options.input.filePath, this.promptPathRepresentationService);
 			const documentSnapshot = await this.getSnapshot(uri);
 			ranges = getParamRanges(options.input, documentSnapshot);
 
-			void this.sendReadFileTelemetry('success', options, ranges);
+			void this.sendReadFileTelemetry('success', options, ranges, uri);
 			return new LanguageModelToolResult([
 				new LanguageModelPromptTsxPart(
 					await renderPromptElementJSON(
@@ -144,7 +148,7 @@ export class ReadFileTool implements ICopilotTool<ReadFileParams> {
 				)
 			]);
 		} catch (err) {
-			void this.sendReadFileTelemetry('error', options, ranges || { start: 0, end: 0, truncated: false });
+			void this.sendReadFileTelemetry('error', options, ranges || { start: 0, end: 0, truncated: false }, uri);
 			throw err;
 		}
 	}
@@ -155,14 +159,14 @@ export class ReadFileTool implements ICopilotTool<ReadFileParams> {
 			return;
 		}
 
-		let uri: URI;
+		let uri: URI | undefined;
 		let documentSnapshot: NotebookDocumentSnapshot | TextDocumentSnapshot;
 		try {
 			uri = resolveToolInputPath(input.filePath, this.promptPathRepresentationService);
-			await this.instantiationService.invokeFunction(accessor => assertFileOkForTool(accessor, uri));
+			await this.instantiationService.invokeFunction(accessor => assertFileOkForTool(accessor, uri!));
 			documentSnapshot = await this.getSnapshot(uri);
 		} catch (err) {
-			void this.sendReadFileTelemetry('invalidFile', options, { start: 0, end: 0, truncated: false });
+			void this.sendReadFileTelemetry('invalidFile', options, { start: 0, end: 0, truncated: false }, uri);
 			throw err;
 		}
 
@@ -183,7 +187,7 @@ export class ReadFileTool implements ICopilotTool<ReadFileParams> {
 	}
 
 	public alternativeDefinition(originTool: vscode.LanguageModelToolInformation): vscode.LanguageModelToolInformation {
-		if (this.configurationService.getExperimentBasedConfig<boolean>(ConfigKey.Internal.EnableReadFileV2, this.experimentationService)) {
+		if (this.configurationService.getExperimentBasedConfig<boolean>(ConfigKey.TeamInternal.EnableReadFileV2, this.experimentationService)) {
 			return readFileV2Description;
 		}
 
@@ -196,8 +200,9 @@ export class ReadFileTool implements ICopilotTool<ReadFileParams> {
 			TextDocumentSnapshot.create(await this.workspaceService.openTextDocument(uri));
 	}
 
-	private async sendReadFileTelemetry(outcome: string, options: Pick<vscode.LanguageModelToolInvocationOptions<ReadFileParams>, 'model' | 'chatRequestId' | 'input'>, { start, end, truncated }: IParamRanges) {
+	private async sendReadFileTelemetry(outcome: string, options: Pick<vscode.LanguageModelToolInvocationOptions<ReadFileParams>, 'model' | 'chatRequestId' | 'input'>, { start, end, truncated }: IParamRanges, uri: URI | undefined) {
 		const model = options.model && (await this.endpointProvider.getChatEndpoint(options.model)).model;
+		const fileType = uri && this.customInstructionsService.isSkillFile(uri) ? 'skill' : '';
 
 		/* __GDPR__
 			"readFileToolInvoked" : {
@@ -210,7 +215,8 @@ export class ReadFileTool implements ICopilotTool<ReadFileParams> {
 				"linesRead": { "classification": "SystemMetaData", "purpose": "FeatureInsight", "isMeasurement": true, "comment": "The number of lines that were read" },
 				"truncated": { "classification": "SystemMetaData", "purpose": "FeatureInsight", "isMeasurement": true, "comment": "The file length was truncated" },
 				"isV2": { "classification": "SystemMetaData", "purpose": "FeatureInsight", "comment": "Whether the tool is a v2 version" },
-				"isEntireFile": { "classification": "SystemMetaData", "purpose": "FeatureInsight", "comment": "Whether the entire file was read with v2 params" }
+				"isEntireFile": { "classification": "SystemMetaData", "purpose": "FeatureInsight", "comment": "Whether the entire file was read with v2 params" },
+				"fileType": { "classification": "SystemMetaData", "purpose": "FeatureInsight", "comment": "The type of file being read" }
 			}
 		*/
 		this.telemetryService.sendMSFTTelemetryEvent('readFileToolInvoked',
@@ -220,6 +226,7 @@ export class ReadFileTool implements ICopilotTool<ReadFileParams> {
 				toolOutcome: outcome, // Props named "outcome" often get stuck in the kusto pipeline
 				isV2: isParamsV2(options.input) ? 'true' : 'false',
 				isEntireFile: isParamsV2(options.input) && options.input.offset === undefined && options.input.limit === undefined ? 'true' : 'false',
+				fileType,
 				model
 			},
 			{

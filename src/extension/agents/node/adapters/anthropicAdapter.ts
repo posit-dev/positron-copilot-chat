@@ -151,7 +151,7 @@ class AnthropicAdapter implements IProtocolAdapter {
 				type: 'content_block_delta',
 				index: this.currentBlockIndex,
 				delta: {
-					type: "input_json_delta",
+					type: 'input_json_delta',
 					partial_json: JSON.stringify(streamData.input || {})
 				}
 			};
@@ -300,7 +300,7 @@ class AnthropicAdapter implements IProtocolAdapter {
 		return headers['x-api-key'] as string | undefined;
 	}
 
-	private formatEventData(data: any): string {
+	private formatEventData(data: unknown): string {
 		return JSON.stringify(data).replace(/\n/g, '\\n');
 	}
 }

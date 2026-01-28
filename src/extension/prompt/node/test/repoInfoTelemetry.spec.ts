@@ -81,11 +81,19 @@ suite('RepoInfoTelemetry', () => {
 			initialize: vi.fn(),
 			log: vi.fn(),
 			diffBetween: vi.fn(),
+			diffBetweenWithStats: vi.fn(),
+			diffBetweenPatch: vi.fn(),
 			diffWith: vi.fn(),
 			diffIndexWithHEADShortStats: vi.fn(),
 			fetch: vi.fn(),
 			getMergeBase: vi.fn(),
 			add: vi.fn(),
+			createWorktree: vi.fn(),
+			deleteWorktree: vi.fn(),
+			migrateChanges: vi.fn(),
+			applyPatch: vi.fn(),
+			commit: vi.fn(),
+			getRefs: vi.fn(),
 			dispose: vi.fn()
 		};
 		services.define(IGitService, mockGitService);

@@ -81,7 +81,7 @@ export class CompletionsProvider extends Disposable {
 
 		const blockMode = BlockMode.ParsingAndServer;
 
-		const url = this.configService.getExperimentBasedConfig(ConfigKey.Internal.InlineEditsCompletionsUrl, this.expService);
+		const url = this.configService.getExperimentBasedConfig(ConfigKey.TeamInternal.InlineEditsCompletionsUrl, this.expService);
 
 		if (!url) {
 			this.tracer.throws('No completions URL configured');
@@ -99,7 +99,7 @@ export class CompletionsProvider extends Disposable {
 				top_p: 1,
 				n: 1,
 				stop: [
-					"\n" // TODO@ulugbekna
+					'\n' // TODO@ulugbekna
 				],
 				stream: true,
 				extra: {

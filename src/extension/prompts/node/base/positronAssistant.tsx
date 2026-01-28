@@ -3,10 +3,10 @@
  *  Licensed under the Elastic License 2.0. See LICENSE.txt for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import { AssistantMessage, PromptElement, PromptSizing, SystemMessage, TextChunk } from '@vscode/prompt-tsx';
+import { PromptElement, PromptSizing, SystemMessage, TextChunk } from '@vscode/prompt-tsx';
+import { ChatResponsePart } from '@vscode/prompt-tsx/dist/base/vscodeTypes.js';
 import * as vscode from 'vscode';
 import { GenericBasePromptElementProps } from '../../../context/node/resolvers/genericPanelIntentInvocation';
-import { ChatResponsePart } from '@vscode/prompt-tsx/dist/base/vscodeTypes.js';
 import { IBuildPromptContext } from '../../../prompt/common/intents.js';
 
 /**

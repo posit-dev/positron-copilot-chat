@@ -9,6 +9,7 @@ import tsParser from '@typescript-eslint/parser';
 import importEslint from 'eslint-plugin-import';
 import jsdocEslint from 'eslint-plugin-jsdoc';
 import fs from 'fs';
+import { builtinModules } from 'module';
 import path from 'path';
 import tseslint from 'typescript-eslint';
 import { fileURLToPath } from 'url';
@@ -16,7 +17,7 @@ import { fileURLToPath } from 'url';
 import headerEslint from 'eslint-plugin-header';
 headerEslint.rules.header.meta.schema = false;
 
-import localEslint from './.eslintplugin/index.js';
+import * as localEslint from './.eslintplugin/index.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ignores = fs.readFileSync(path.join(__dirname, '.eslint-ignore'), 'utf8')
@@ -169,59 +170,7 @@ export default tseslint.config(
 			'no-restricted-imports': [
 				'error',
 				// node: builtins
-				'assert',
-				'assert/strict',
-				'async_hooks',
-				'buffer',
-				'child_process',
-				'cluster',
-				'console',
-				'constants',
-				'crypto',
-				'dgram',
-				'diagnostics_channel',
-				'dns',
-				'dns/promises',
-				'domain',
-				'events',
-				'fs',
-				'fs/promises',
-				'http',
-				'http2',
-				'https',
-				'inspector',
-				'module',
-				'net',
-				'os',
-				'path',
-				'path/posix',
-				'path/win32',
-				'perf_hooks',
-				'process',
-				'punycode',
-				'querystring',
-				'readline',
-				'readline/promises',
-				'repl',
-				'stream',
-				'stream/consumers',
-				'stream/promises',
-				'stream/web',
-				'string_decoder',
-				'sys',
-				'timers',
-				'timers/promises',
-				'tls',
-				'trace_events',
-				'tty',
-				'url',
-				'util',
-				'util/types',
-				'v8',
-				'vm',
-				'wasi',
-				'worker_threads',
-				'zlib',
+				...builtinModules,
 				// node: dependencies
 				'@humanwhocodes/gitignore-to-minimatch',
 				'@vscode/extension-telemetry',
@@ -328,6 +277,8 @@ export default tseslint.config(
 					string: 'Generate with Copilot'
 				}
 			],
+			'local/no-nls-localize': ['error'],
+			'local/no-unexternalized-strings': ['error'],
 		}
 	},
 	{
@@ -375,10 +326,7 @@ export default tseslint.config(
 		ignores: [
 			'src/util/vs/**/*.ts', // vendored code
 			'src/**/*.spec.ts', // allow in tests
-			'./src/extension/agents/claude/common/claudeTools.ts',
-			'./src/extension/agents/claude/common/toolInvocationFormatter.ts',
 			'./src/extension/agents/copilotcli/node/nodePtyShim.ts',
-			'./src/extension/agents/node/adapters/anthropicAdapter.ts',
 			'./src/extension/byok/common/anthropicMessageConverter.ts',
 			'./src/extension/byok/common/geminiFunctionDeclarationConverter.ts',
 			'./src/extension/byok/common/geminiMessageConverter.ts',
@@ -389,16 +337,12 @@ export default tseslint.config(
 			'./src/extension/chatSessions/vscode-node/copilotCloudSessionsProvider.ts',
 			'./src/extension/codeBlocks/node/codeBlockProcessor.ts',
 			'./src/extension/codeBlocks/vscode-node/provider.ts',
-			'./src/extension/common/contributions.ts',
 			'./src/extension/configuration/vscode-node/configurationMigration.ts',
 			'./src/extension/context/node/resolvers/genericInlineIntentInvocation.ts',
 			'./src/extension/context/node/resolvers/genericPanelIntentInvocation.ts',
 			'./src/extension/context/node/resolvers/inlineFixIntentInvocation.ts',
 			'./src/extension/context/node/resolvers/promptWorkspaceLabels.ts',
-			'./src/extension/context/node/resolvers/vscodeContext.ts',
 			'./src/extension/contextKeys/vscode-node/contextKeys.contribution.ts',
-			'./src/extension/conversation/vscode-node/conversationFeature.ts',
-			'./src/extension/conversation/vscode-node/feedbackReporter.ts',
 			'./src/extension/conversation/vscode-node/userActions.ts',
 			'./src/extension/extension/vscode/services.ts',
 			'./src/extension/inlineChat/node/rendererVisualization.ts',
@@ -410,7 +354,6 @@ export default tseslint.config(
 			'./src/extension/intents/node/fixIntent.ts',
 			'./src/extension/intents/node/newIntent.ts',
 			'./src/extension/intents/node/searchIntent.ts',
-			'./src/extension/intents/node/toolCallingLoop.ts',
 			'./src/extension/languageContextProvider/vscode-node/languageContextProviderService.ts',
 			'./src/extension/linkify/common/commands.ts',
 			'./src/extension/linkify/common/responseStreamWithLinkification.ts',
@@ -423,11 +366,9 @@ export default tseslint.config(
 			'./src/extension/onboardDebug/node/copilotDebugWorker/rpc.ts',
 			'./src/extension/onboardDebug/node/parseLaunchConfigFromResponse.ts',
 			'./src/extension/onboardDebug/vscode-node/copilotDebugCommandHandle.ts',
-			'./src/extension/prompt/common/conversation.ts',
 			'./src/extension/prompt/common/toolCallRound.ts',
 			'./src/extension/prompt/node/chatMLFetcher.ts',
 			'./src/extension/prompt/node/chatParticipantTelemetry.ts',
-			'./src/extension/prompt/node/defaultIntentRequestHandler.ts',
 			'./src/extension/prompt/node/editGeneration.ts',
 			'./src/extension/prompt/node/intents.ts',
 			'./src/extension/prompt/node/todoListContextProvider.ts',
@@ -446,11 +387,7 @@ export default tseslint.config(
 			'./src/extension/test/vscode-node/sanity.sanity-test.ts',
 			'./src/extension/test/vscode-node/session.test.ts',
 			'./src/extension/tools/common/toolSchemaNormalizer.ts',
-			'./src/extension/tools/common/toolsRegistry.ts',
 			'./src/extension/tools/common/toolsService.ts',
-			'./src/extension/tools/node/test/searchToolTestUtils.ts',
-			'./src/extension/tools/node/test/testToolsService.ts',
-			'./src/extension/tools/vscode-node/toolsService.ts',
 			'./src/extension/typescriptContext/common/serverProtocol.ts',
 			'./src/extension/typescriptContext/serverPlugin/src/common/baseContextProviders.ts',
 			'./src/extension/typescriptContext/serverPlugin/src/common/contextProvider.ts',
@@ -537,7 +474,6 @@ export default tseslint.config(
 			'./src/platform/test/node/fetcher.ts',
 			'./src/platform/test/node/services.ts',
 			'./src/platform/test/node/simulationWorkspace.ts',
-			'./src/platform/test/node/simulationWorkspaceServices.ts',
 			'./src/platform/test/node/telemetry.ts',
 			'./src/platform/test/node/testWorkbenchService.ts',
 			'./src/platform/testing/common/nullWorkspaceMutationManager.ts',
@@ -569,7 +505,6 @@ export default tseslint.config(
 			'./src/util/common/timeTravelScheduler.ts',
 			'./src/util/common/types.ts',
 			'./src/util/node/worker.ts',
-			'./src/extension/prompt/common/specialRequestTypes.ts',
 		],
 		languageOptions: {
 			parser: tseslint.parser,
@@ -584,6 +519,12 @@ export default tseslint.config(
 					'fixToUnknown': true
 				}
 			]
+		}
+	},
+	{
+		files: ['./src/lib/node/chatLibMain.ts'],
+		rules: {
+			'import/no-restricted-paths': 'off'
 		}
 	},
 );

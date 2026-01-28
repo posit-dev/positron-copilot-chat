@@ -6,11 +6,13 @@
 import * as http from 'http';
 import * as https from 'https';
 import { IEnvService } from '../../env/common/envService';
-import { FetchOptions, IAbortController, IHeaders, Response } from '../common/fetcherService';
-import { IFetcher, userAgentLibraryHeader } from '../common/networking';
 import { collectSingleLineErrorMessage } from '../../log/common/logService';
+import { FetchOptions, IAbortController, IHeaders, PaginationOptions, Response } from '../common/fetcherService';
+import { IFetcher, userAgentLibraryHeader } from '../common/networking';
 
 export class NodeFetcher implements IFetcher {
+
+	static readonly ID = 'node-http' as const;
 
 	constructor(
 		private readonly _envService: IEnvService,
@@ -20,10 +22,10 @@ export class NodeFetcher implements IFetcher {
 	}
 
 	getUserAgentLibrary(): string {
-		return 'node-http';
+		return NodeFetcher.ID;
 	}
 
-	fetch(url: string, options: FetchOptions): Promise<Response> {
+	async fetch(url: string, options: FetchOptions): Promise<Response> {
 		const headers = { ...options.headers };
 		if (!headers['User-Agent']) {
 			headers['User-Agent'] = `GitHubCopilotChat/${this._envService.getVersion()}`;
@@ -49,7 +51,38 @@ export class NodeFetcher implements IFetcher {
 			throw new Error(`Illegal arguments! 'signal' must be an instance of AbortSignal!`);
 		}
 
-		return this._fetch(url, method, headers, body, signal);
+		try {
+			return await this._fetch(url, method, headers, body, signal);
+		} catch (e) {
+			e.fetcherId = NodeFetcher.ID;
+			throw e;
+		}
+	}
+
+	async fetchWithPagination<T>(baseUrl: string, options: PaginationOptions<T>): Promise<T[]> {
+		const items: T[] = [];
+		const pageSize = options.pageSize ?? 20;
+		let page = options.startPage ?? 1;
+		let hasNextPage = false;
+
+		do {
+			const url = options.buildUrl(baseUrl, pageSize, page);
+			const response = await this.fetch(url, options);
+
+			if (!response.ok) {
+				// Return what we've collected so far if request fails
+				return items;
+			}
+
+			const data = await response.json();
+			const pageItems = options.getItemsFromResponse(data);
+			items.push(...pageItems);
+
+			hasNextPage = pageItems.length === pageSize;
+			page++;
+		} while (hasNextPage);
+
+		return items;
 	}
 
 	private _fetch(url: string, method: 'GET' | 'POST', headers: { [name: string]: string }, body: string | undefined, signal: AbortSignal): Promise<Response> {
@@ -71,6 +104,7 @@ export class NodeFetcher implements IFetcher {
 					async () => nodeFetcherResponse.text(),
 					async () => nodeFetcherResponse.json(),
 					async () => nodeFetcherResponse.body(),
+					NodeFetcher.ID
 				));
 			});
 			req.setTimeout(60 * 1000); // time out after 60s of receiving no data
@@ -108,7 +142,7 @@ function makeAbortError(signal: AbortSignal): Error {
 }
 function isAbortError(e: any): boolean {
 	// see https://github.com/nodejs/node/issues/38361#issuecomment-1683839467
-	return e && e.name === "AbortError";
+	return e && e.name === 'AbortError';
 }
 
 class NodeFetcherResponse {

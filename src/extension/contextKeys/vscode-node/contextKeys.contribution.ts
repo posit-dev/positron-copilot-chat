@@ -71,7 +71,7 @@ export class ContextKeysContribution extends Disposable {
 		this._updateDebugContext();
 		this._updatePrExtensionInstalledContext();
 
-		const debugReportFeedback = this._configService.getConfigObservable(ConfigKey.Internal.DebugReportFeedback);
+		const debugReportFeedback = this._configService.getConfigObservable(ConfigKey.TeamInternal.DebugReportFeedback);
 		this._register(autorun(reader => {
 			commands.executeCommand('setContext', debugReportFeedbackContextKey, debugReportFeedback.read(reader));
 		}));
@@ -227,7 +227,7 @@ export class ContextKeysContribution extends Disposable {
 		let missingPermissiveSession = false;
 		if (!this._authenticationService.isMinimalMode) {
 			try {
-				hasPermissiveSession = !!(await this._authenticationService.getPermissiveGitHubSession({ silent: true }));
+				hasPermissiveSession = !!(await this._authenticationService.getGitHubSession('permissive', { silent: true }));
 			} catch (error) {
 				if (!(error instanceof MinimalModeError)) {
 					this._logService.trace(`[context keys] Failed to resolve permissive session: ${error instanceof Error ? error.message : String(error)}`);

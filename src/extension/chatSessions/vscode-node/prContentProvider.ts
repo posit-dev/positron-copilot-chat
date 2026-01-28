@@ -4,7 +4,7 @@
  *--------------------------------------------------------------------------------------------*/
 
 import * as vscode from 'vscode';
-import { IOctoKitService } from '../../../platform/github/common/githubService';
+import { IOctoKitService, PullRequestFile } from '../../../platform/github/common/githubService';
 import { ILogService } from '../../../platform/log/common/logService';
 import { Disposable } from '../../../util/vs/base/common/lifecycle';
 
@@ -24,6 +24,7 @@ export interface PRContentUriParams {
 	commitSha: string;
 	isBase: boolean; // true for left side, false for right side
 	previousFileName?: string; // for renames
+	status?: PullRequestFile['status'];
 }
 
 /**
@@ -52,6 +53,16 @@ export function fromPRContentUri(uri: vscode.Uri): PRContentUriParams | undefine
 	} catch (e) {
 		return undefined;
 	}
+}
+
+function isMissingOnSide(status: PullRequestFile['status'] | undefined, isBase: boolean): boolean {
+	if (!status) {
+		return false;
+	}
+	if (isBase) {
+		return status === 'added';
+	}
+	return status === 'removed';
 }
 
 /**
@@ -84,6 +95,13 @@ export class PRContentProvider extends Disposable implements vscode.TextDocument
 			return '';
 		}
 
+		if (isMissingOnSide(params.status, params.isBase)) {
+			this.logService.trace(
+				`[${PRContentProvider.ID}] Skipping fetch for ${params.fileName} because it does not exist on the ${params.isBase ? 'base' : 'head'} side (status: ${params.status})`
+			);
+			return '';
+		}
+
 		try {
 			this.logService.trace(
 				`[${PRContentProvider.ID}] Fetching ${params.isBase ? 'base' : 'head'} content for ${params.fileName} ` +
@@ -95,7 +113,8 @@ export class PRContentProvider extends Disposable implements vscode.TextDocument
 				params.owner,
 				params.repo,
 				params.commitSha,
-				params.fileName
+				params.fileName,
+				{ createIfNone: true }
 			);
 
 			return content;
