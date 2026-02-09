@@ -28,7 +28,7 @@ export class DocumentFilter {
 			PositronInlineCompletionsEnableDefault
 		);
 		// --- End Positron ---
-		this._ignoreCompletionsDisablement = this._configurationService.getConfigObservable(ConfigKey.Internal.InlineEditsIgnoreCompletionsDisablement);
+		this._ignoreCompletionsDisablement = this._configurationService.getConfigObservable(ConfigKey.TeamInternal.InlineEditsIgnoreCompletionsDisablement);
 	}
 
 	public async isTrackingEnabled(document: TextDocument | NotebookDocument): Promise<boolean> {

@@ -17,8 +17,8 @@ import { CustomModel, EndpointEditToolName } from '../../endpoint/common/endpoin
 import { ILogService } from '../../log/common/logService';
 import { ITelemetryService, TelemetryProperties } from '../../telemetry/common/telemetry';
 import { TelemetryData } from '../../telemetry/common/telemetryData';
-import { FinishedCallback, OpenAiFunctionTool, OpenAiResponsesFunctionTool, OptionalChatRequestParams, Prediction } from './fetch';
-import { FetcherId, FetchOptions, IAbortController, IFetcherService, Response } from './fetcherService';
+import { AnthropicMessagesTool, FinishedCallback, OpenAiFunctionTool, OpenAiResponsesFunctionTool, OptionalChatRequestParams, Prediction } from './fetch';
+import { FetcherId, FetchOptions, IAbortController, IFetcherService, PaginationOptions, Response } from './fetcherService';
 import { ChatCompletion, RawMessageConversionCallback, rawMessageToCAPI } from './openai';
 
 /**
@@ -35,6 +35,7 @@ export interface IFetcher {
 	isInternetDisconnectedError(e: any): boolean;
 	isFetcherError(err: any): boolean;
 	getUserMessageForFetcherError(err: any): string;
+	fetchWithPagination<T>(baseUrl: string, options: PaginationOptions<T>): Promise<T[]>;
 }
 
 export const userAgentLibraryHeader = 'X-VSCode-User-Agent-Library-Version';
@@ -58,7 +59,7 @@ const requestTimeoutMs = 30 * 1000; // 30 seconds
  */
 export interface IEndpointBody {
 	/** General or completions: */
-	tools?: (OpenAiFunctionTool | OpenAiResponsesFunctionTool)[];
+	tools?: (OpenAiFunctionTool | OpenAiResponsesFunctionTool | AnthropicMessagesTool)[];
 	model?: string;
 	previous_response_id?: string;
 	max_tokens?: number;
@@ -104,6 +105,15 @@ export interface IEndpointBody {
 	text?: {
 		verbosity?: 'low' | 'medium' | 'high';
 	};
+
+	/** Messages API */
+	thinking?: {
+		type: 'enabled' | 'disabled';
+		budget_tokens?: number;
+	};
+
+	/** ChatCompletions API for Anthropic models */
+	thinking_budget?: number;
 }
 
 export interface IEndpointFetchOptions {
@@ -150,14 +160,32 @@ export interface IMakeChatRequestOptions {
 	requestOptions?: Omit<OptionalChatRequestParams, 'n'>;
 	/** Indicates if the request was user-initiated */
 	userInitiatedRequest?: boolean;
+	/** Indicate whether this is a conversation request or a non-conversation utility request (like model list fetch or title generation) */
+	isConversationRequest?: boolean;
 	/** (CAPI-only) Optional telemetry properties for analytics */
-	telemetryProperties?: TelemetryProperties;
+	telemetryProperties?: IChatRequestTelemetryProperties;
 	/** Enable retrying the request when it was filtered due to snippy. Note- if using finishedCb, requires supporting delta.retryReason, eg with clearToPreviousToolInvocation */
 	enableRetryOnFilter?: boolean;
 	/** Enable retrying the request when it failed. Defaults to enableRetryOnFilter. Note- if using finishedCb, requires supporting delta.retryReason, eg with clearToPreviousToolInvocation */
 	enableRetryOnError?: boolean;
 	/** Which fetcher to use, overrides the default. */
 	useFetcher?: FetcherId;
+	/** Disable extended thinking for this request. Used when resuming from tool call errors where the original thinking blocks are not available. */
+	disableThinking?: boolean;
+}
+
+export type IChatRequestTelemetryProperties = {
+	requestId?: string;
+	messageId?: string;
+	conversationId?: string;
+	messageSource?: string;
+	associatedRequestId?: string;
+	retryAfterErrorCategory?: string;
+	retryAfterError?: string;
+	retryAfterErrorGitHubRequestId?: string;
+	connectivityTestError?: string;
+	connectivityTestErrorGitHubRequestId?: string;
+	retryAfterFilterCategory?: string;
 }
 
 export interface ICreateEndpointBodyOptions extends IMakeChatRequestOptions {

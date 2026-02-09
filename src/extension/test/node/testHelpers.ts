@@ -3,12 +3,12 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import type { ChatPromptReference, ChatRequest } from 'vscode';
-import * as vscodeTypes from '../../../vscodeTypes';
-import { generateUuid } from '../../../util/vs/base/common/uuid';
+import type { ChatPromptReference, ChatRequest, ExtendedChatResponsePart, Uri } from 'vscode';
 import { ChatResponseStreamImpl } from '../../../util/common/chatResponseStreamImpl';
 import { MarkdownString } from '../../../util/vs/base/common/htmlContent';
 import { URI } from '../../../util/vs/base/common/uri';
+import { generateUuid } from '../../../util/vs/base/common/uuid';
+import * as vscodeTypes from '../../../vscodeTypes';
 
 export class TestChatRequest implements ChatRequest {
 	public command: string | undefined;
@@ -26,9 +26,10 @@ export class TestChatRequest implements ChatRequest {
 	public sessionId = generateUuid();
 
 	constructor(
-		public prompt: string
+		public prompt: string,
+		references?: ChatPromptReference[]
 	) {
-		this.references = [];
+		this.references = references ?? [];
 		this.location = vscodeTypes.ChatLocation.Panel;
 		this.attempt = 0;
 		this.enableCommandDetection = false;
@@ -40,14 +41,24 @@ export class MockChatResponseStream extends ChatResponseStreamImpl {
 
 	public output: string[] = [];
 	public uris: string[] = [];
-
-	constructor() {
-		super(() => { }, () => { });
+	public externalEditUris: Uri[] = [];
+	constructor(push: ((part: ExtendedChatResponsePart) => void) = () => { }) {
+		super(push, () => { });
 	}
 	override markdown(content: string | MarkdownString): void {
 		this.output.push(typeof content === 'string' ? content : content.value);
 	}
 	override codeblockUri(uri: URI): void {
 		this.uris.push(uri.toString());
+	}
+
+	override async externalEdit(target: Uri | Uri[], callback: () => Thenable<void>): Promise<string> {
+		if (Array.isArray(target)) {
+			this.externalEditUris.push(...target);
+		} else {
+			this.externalEditUris.push(target);
+		}
+		await callback();
+		return '';
 	}
 }

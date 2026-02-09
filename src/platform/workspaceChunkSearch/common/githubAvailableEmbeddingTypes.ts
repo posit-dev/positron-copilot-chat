@@ -65,7 +65,7 @@ export class GithubAvailableEmbeddingTypesService implements IGithubAvailableEmb
 		@IConfigurationService private readonly _configurationService: IConfigurationService,
 		@IExperimentationService private readonly _experimentationService: IExperimentationService,
 	) {
-		this._cached = this._authService.getAnyGitHubSession({ silent: true }).then(session => {
+		this._cached = this._authService.getGitHubSession('any', { silent: true }).then(session => {
 			if (!session) {
 				return Result.error<GetAvailableTypesError>({ type: 'noSession' });
 			}
@@ -92,7 +92,7 @@ export class GithubAvailableEmbeddingTypesService implements IGithubAvailableEmb
 		}
 
 		this._cached ??= (async () => {
-			const anySession = await this._authService.getAnyGitHubSession({ silent });
+			const anySession = await this._authService.getGitHubSession('any', { silent });
 			if (!anySession) {
 				return Result.error<GetAvailableTypesError>({ type: 'noSession' });
 			}
@@ -102,7 +102,7 @@ export class GithubAvailableEmbeddingTypesService implements IGithubAvailableEmb
 				return initialResult;
 			}
 
-			const permissiveSession = await this._authService.getPermissiveGitHubSession({ silent, createIfNone: !silent ? true : undefined });
+			const permissiveSession = await this._authService.getGitHubSession('permissive', { silent, createIfNone: !silent ? true : undefined });
 			if (!permissiveSession) {
 				return initialResult;
 			}
@@ -218,7 +218,7 @@ export class GithubAvailableEmbeddingTypesService implements IGithubAvailableEmb
 		const all = result.val;
 		this._logService.info(`GithubAvailableEmbeddingTypesManager: Got embeddings. Primary: ${all.primary.join(',')}. Deprecated: ${all.deprecated.join(',')}`);
 
-		const preference = this._configurationService.getExperimentBasedConfig(ConfigKey.Internal.WorkspacePreferredEmbeddingsModel, this._experimentationService);
+		const preference = this._configurationService.getExperimentBasedConfig(ConfigKey.Advanced.WorkspacePreferredEmbeddingsModel, this._experimentationService);
 		if (preference) {
 			const preferred = [...all.primary, ...all.deprecated].find(type => type.id === preference);
 			if (preferred) {

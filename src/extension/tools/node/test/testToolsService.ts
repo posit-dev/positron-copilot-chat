@@ -40,7 +40,7 @@ export class TestToolsService extends BaseToolsService implements IToolsService 
 		});
 	}
 
-	private readonly _copilotTools: Map<ToolName, Lazy<ICopilotTool<any>>>;
+	private readonly _copilotTools: Map<ToolName, Lazy<ICopilotTool<unknown>>>;
 	get copilotTools() {
 		return new Map(Iterable.map(this._copilotTools.entries(),
 			([name, tool]) => [name, tool.value]));
@@ -58,6 +58,9 @@ export class TestToolsService extends BaseToolsService implements IToolsService 
 			.map(t => [t.toolName, new Lazy(() => instantiationService.createInstance(t))] as const));
 
 		for (const tool of filteredTools) {
+			if (!tool.prototype.invoke) {
+				continue;
+			}
 			if (TestToolsService.ExcludedTools.includes(tool.toolName)) {
 				continue;
 			}
@@ -102,9 +105,10 @@ export class TestToolsService extends BaseToolsService implements IToolsService 
 	async invokeTool(name: string, options: vscode.LanguageModelToolInvocationOptions<unknown>, token: CancellationToken): Promise<LanguageModelToolResult2> {
 		name = getToolName(name);
 		const tool = this._copilotTools.get(name as ToolName)?.value;
-		if (tool) {
+		const invoke = tool?.invoke;
+		if (invoke) {
 			this._onWillInvokeTool.fire({ toolName: name });
-			const result = await tool.invoke(options, token);
+			const result = await invoke.call(tool, options, token);
 			if (!result) {
 				throw new CancellationError();
 			}
@@ -112,10 +116,14 @@ export class TestToolsService extends BaseToolsService implements IToolsService 
 			return result;
 		}
 
+		if (tool) {
+			throw new Error(`tool ${name} does not implement invoke`);
+		}
+
 		throw new Error('unknown tool: ' + name);
 	}
 
-	override getCopilotTool(name: string): ICopilotTool<any> | undefined {
+	override getCopilotTool(name: string): ICopilotTool<unknown> | undefined {
 		const tool = this._copilotTools.get(name as ToolName)?.value;
 		return tool;
 	}

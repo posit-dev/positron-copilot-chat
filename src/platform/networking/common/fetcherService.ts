@@ -17,6 +17,7 @@ export interface IFetcherService {
 	isInternetDisconnectedError(e: any): boolean;
 	isFetcherError(e: any): boolean;
 	getUserMessageForFetcherError(err: any): string;
+	fetchWithPagination<T>(baseUrl: string, options: PaginationOptions<T>): Promise<T[]>;
 }
 
 /** A basic version of http://developer.mozilla.org/en-US/docs/Web/API/Response */
@@ -28,7 +29,8 @@ export class Response {
 		readonly headers: IHeaders,
 		private readonly getText: () => Promise<string>,
 		private readonly getJson: () => Promise<any>,
-		private readonly getBody: () => Promise<unknown | null>
+		private readonly getBody: () => Promise<unknown | null>,
+		readonly fetcher: FetcherId
 	) { }
 
 	async text(): Promise<string> {
@@ -45,20 +47,31 @@ export class Response {
 	}
 }
 
-export type FetcherId = 'electron-fetch' | 'node-fetch' | 'node-http';
+export type FetcherId = 'electron-fetch' | 'node-fetch' | 'node-http' | 'test-stub' | 'helix-fetch';
 
 /** These are the options we currently use, for ease of reference. */
 export interface FetchOptions {
 	headers?: { [name: string]: string };
 	body?: string;
 	timeout?: number;
-	json?: any;
+	/**
+	 * If `json` is provided, it will be stringified using `JSON.stringify` and sent as the body with
+	 * the `Content-Type` header set to `application/json`.
+	 */
+	json?: unknown;
 	method?: 'GET' | 'POST';
 	signal?: IAbortSignal;
 	retryFallbacks?: boolean;
 	expectJSON?: boolean;
 	useFetcher?: FetcherId;
 	suppressIntegrationId?: boolean;
+}
+
+export interface PaginationOptions<T> extends FetchOptions {
+	pageSize?: number;
+	startPage?: number;
+	getItemsFromResponse: (data: any) => T[];
+	buildUrl: (baseUrl: string, pageSize: number, page: number) => string;
 }
 
 export interface IAbortSignal {

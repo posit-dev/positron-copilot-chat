@@ -6,8 +6,13 @@
 import type { SessionEvent, ToolExecutionCompleteEvent, ToolExecutionStartEvent } from '@github/copilot/sdk';
 import * as l10n from '@vscode/l10n';
 import type { ChatPromptReference, ChatTerminalToolInvocationData, ExtendedChatResponsePart } from 'vscode';
+import { isLocation } from '../../../../util/common/types';
+import { ResourceSet } from '../../../../util/vs/base/common/map';
 import { URI } from '../../../../util/vs/base/common/uri';
-import { ChatRequestTurn2, ChatResponseMarkdownPart, ChatResponsePullRequestPart, ChatResponseThinkingProgressPart, ChatResponseTurn2, ChatToolInvocationPart, MarkdownString, Uri } from '../../../../vscodeTypes';
+import { ChatRequestTurn2, ChatResponseCodeblockUriPart, ChatResponseMarkdownPart, ChatResponsePullRequestPart, ChatResponseTextEditPart, ChatResponseThinkingProgressPart, ChatResponseTurn2, ChatToolInvocationPart, MarkdownString, Uri } from '../../../../vscodeTypes';
+import { formatUriForFileWidget } from '../../../tools/common/toolUtils';
+import { extractChatPromptReferences, getFolderAttachmentPath } from './copilotCLIPrompt';
+import { IChatDelegationSummaryService } from './delegationSummaryService';
 
 
 interface CreateTool {
@@ -27,7 +32,7 @@ interface ViewTool {
 }
 
 interface EditTool {
-	toolName: 'edit';
+	toolName: 'edit' | 'str_replace';
 	arguments: {
 		path: string;
 		old_str?: string;
@@ -140,22 +145,70 @@ type ReportProgressTool = {
 	};
 };
 
+type SearchTool = {
+	toolName: 'search';
+	arguments: {
+		question: string;
+		reason: string;
+		searchCommand: string;
+	};
+};
+
+type SearchBashTool = {
+	toolName: 'search_bash';
+	arguments: {
+		command: string;
+	};
+};
+
+type SemanticCodeSearchTool = {
+	toolName: 'semantic_code_search';
+	arguments: {
+		question: string;
+	};
+};
+
+type ReplyToCommentTool = {
+	toolName: 'reply_to_comment';
+	arguments: {
+		reply: string;
+		comment_id: string;
+	};
+};
+
+type CodeReviewTool = {
+	toolName: 'code_review';
+	arguments: {
+		prTitle: string;
+		prDescription: string;
+	};
+};
+
 
 type StringReplaceArgumentTypes = CreateTool | ViewTool | StrReplaceTool | EditTool | InsertTool | UndoEditTool;
 type ToStringReplaceEditorArguments<T extends StringReplaceArgumentTypes> = {
 	command: T['toolName'];
 } & T['arguments'];
-export type ToolInfo = {
+type StringReplaceEditorTool = {
 	toolName: 'str_replace_editor';
 	arguments: ToStringReplaceEditorArguments<CreateTool> | ToStringReplaceEditorArguments<ViewTool> | ToStringReplaceEditorArguments<EditTool> | ToStringReplaceEditorArguments<StrReplaceTool> |
 	ToStringReplaceEditorArguments<UndoEditTool> | ToStringReplaceEditorArguments<InsertTool>;
-} | EditTool | CreateTool | ViewTool | UndoEditTool | InsertTool |
+};
+export type ToolInfo = StringReplaceEditorTool | EditTool | CreateTool | ViewTool | UndoEditTool | InsertTool |
 	ShellTool | WriteShellTool | ReadShellTool | StopShellTool |
 	GrepTool | GLobTool |
-	ReportIntentTool | ThinkTool | ReportProgressTool;
+	ReportIntentTool | ThinkTool | ReportProgressTool |
+	SearchTool | SearchBashTool | SemanticCodeSearchTool |
+	ReplyToCommentTool | CodeReviewTool;
 
-type ToolCall = ToolInfo & { toolCallId: string };
-type UnknownToolCall = { toolName: string; arguments: unknown; toolCallId: string };
+export type ToolCall = ToolInfo & { toolCallId: string };
+export type UnknownToolCall = { toolName: string; arguments: unknown; toolCallId: string };
+
+function isInstructionAttachmentPath(path: string): boolean {
+	const normalizedPath = path.replace(/\\/g, '/');
+	return normalizedPath.endsWith('/.github/copilot-instructions.md')
+		|| (normalizedPath.includes('/.github/instructions/') && normalizedPath.endsWith('.md'));
+}
 
 export function isCopilotCliEditToolCall(data: { toolName: string; arguments?: unknown }): boolean {
 	const toolCall = data as ToolCall;
@@ -187,8 +240,12 @@ export function stripReminders(text: string): string {
 	// Also remove <pr_metadata .../> tags
 	return text
 		.replace(/<reminder>[\s\S]*?<\/reminder>\s*/g, '')
+		.replace(/<attachments>[\s\S]*?<\/attachments>\s*/g, '')
+		.replace(/<userRequest>[\s\S]*?<\/userRequest>\s*/g, '')
+		.replace(/<context>[\s\S]*?<\/context>\s*/g, '')
 		.replace(/<current_datetime>[\s\S]*?<\/current_datetime>\s*/g, '')
 		.replace(/<pr_metadata[^>]*\/?>\s*/g, '')
+		.replace(/<user_query[^>]*\/?>\s*/g, '')
 		.trim();
 }
 
@@ -203,7 +260,7 @@ function extractPRMetadata(content: string): { cleanedContent: string; prPart?: 
 		const [fullMatch, uri, title, description, author, linkTag] = match;
 		// Unescape XML entities
 		const unescapeXml = (text: string) => text
-			.replace(/&apos;/g, "'")
+			.replace(/&apos;/g, `'`)
 			.replace(/&quot;/g, '"')
 			.replace(/&gt;/g, '>')
 			.replace(/&lt;/g, '<')
@@ -228,12 +285,44 @@ function extractPRMetadata(content: string): { cleanedContent: string; prPart?: 
  * Build chat history from SDK events for VS Code chat session
  * Converts SDKEvents into ChatRequestTurn2 and ChatResponseTurn2 objects
  */
-export function buildChatHistoryFromEvents(events: readonly SessionEvent[]): (ChatRequestTurn2 | ChatResponseTurn2)[] {
+export function buildChatHistoryFromEvents(sessionId: string, events: readonly SessionEvent[], getVSCodeRequestId: (sdkRequestId: string) => { requestId: string; toolIdEditMap: Record<string, string> } | undefined, delegationSummaryService: IChatDelegationSummaryService): (ChatRequestTurn2 | ChatResponseTurn2)[] {
 	const turns: (ChatRequestTurn2 | ChatResponseTurn2)[] = [];
 	let currentResponseParts: ExtendedChatResponsePart[] = [];
-	const pendingToolInvocations = new Map<string, ChatToolInvocationPart>();
+	const pendingToolInvocations = new Map<string, [ChatToolInvocationPart, toolData: ToolCall]>();
+
+	let details: { requestId: string; toolIdEditMap: Record<string, string> } | undefined;
+	let isFirstUserMessage = true;
+	const currentAssistantMessage: { chunks: string[] } = { chunks: [] };
+	const processedMessages = new Set<string>();
+
+	function processAssistantMessage(content: string) {
+		// Extract PR metadata if present
+		const { cleanedContent, prPart } = extractPRMetadata(content);
+		// Add PR part first if it exists
+		if (prPart) {
+			currentResponseParts.push(prPart);
+		}
+		if (cleanedContent) {
+			currentResponseParts.push(
+				new ChatResponseMarkdownPart(new MarkdownString(cleanedContent))
+			);
+		}
+	}
+
+	function flushPendingAssistantMessage() {
+		if (currentAssistantMessage.chunks.length > 0) {
+			const content = currentAssistantMessage.chunks.join('');
+			currentAssistantMessage.chunks = [];
+			processAssistantMessage(content);
+		}
+	}
 
 	for (const event of events) {
+		details = getVSCodeRequestId(event.id) ?? details;
+		if (event.type !== 'assistant.message') {
+			flushPendingAssistantMessage();
+		}
+
 		switch (event.type) {
 			case 'user.message': {
 				// Flush any pending response parts before adding user message
@@ -244,28 +333,61 @@ export function buildChatHistoryFromEvents(events: readonly SessionEvent[]): (Ch
 				// TODO @DonJayamanne Temporary work around until we get the zod types.
 				type Attachment = {
 					path: string;
-					type: "file" | "directory";
+					type: 'file' | 'directory';
 					displayName: string;
 				};
-				const references: ChatPromptReference[] = ((event.data.attachments || []) as Attachment[]).map(attachment => ({ id: attachment.path, name: attachment.displayName, value: Uri.file(attachment.path) } as ChatPromptReference));
-				turns.push(new ChatRequestTurn2(stripReminders(event.data.content || ''), undefined, references, '', [], undefined));
+				// Filter out vscode instruction files from references when building session history
+				// TODO@rebornix filter instructions should be rendered as "references" in chat response like normal chat.
+				const references: ChatPromptReference[] = [];
+
+				try {
+					references.push(...extractChatPromptReferences(event.data.content || ''));
+				} catch (ex) {
+					// ignore errors from parsing references
+				}
+				const existingReferences = new ResourceSet();
+				references.forEach(ref => {
+					if (URI.isUri(ref.value)) {
+						existingReferences.add(ref.value);
+					} else if (isLocation(ref.value)) {
+						existingReferences.add(ref.value.uri);
+					}
+				});
+				((event.data.attachments || []) as Attachment[])
+					.filter(attachment => !isInstructionAttachmentPath(attachment.path))
+					.forEach(attachment => {
+						const range = attachment.displayName ? getRangeInPrompt(event.data.content || '', attachment.displayName) : undefined;
+						const attachmentPath = attachment.type === 'directory' ?
+							getFolderAttachmentPath(attachment.path) :
+							attachment.path;
+						const uri = Uri.file(attachmentPath);
+						if (existingReferences.has(uri)) {
+							return; // Skip duplicates
+						}
+						references.push({
+							id: attachment.path,
+							name: attachment.displayName,
+							value: uri,
+							range
+						});
+					});
+
+				let prompt = stripReminders(event.data.content || '');
+				const info = isFirstUserMessage ? delegationSummaryService.extractPrompt(sessionId, prompt) : undefined;
+				if (info) {
+					prompt = info.prompt;
+					references.push(info.reference);
+				}
+				isFirstUserMessage = false;
+				turns.push(new ChatRequestTurn2(prompt, undefined, references, '', [], undefined, details?.requestId));
 				break;
 			}
 			case 'assistant.message': {
-				if (event.data.content) {
-					// Extract PR metadata if present
-					const { cleanedContent, prPart } = extractPRMetadata(event.data.content);
-
-					// Add PR part first if it exists
-					if (prPart) {
-						currentResponseParts.push(prPart);
-					}
-
-					if (cleanedContent) {
-						currentResponseParts.push(
-							new ChatResponseMarkdownPart(new MarkdownString(cleanedContent))
-						);
-					}
+				if (typeof event.data.chunkContent === 'string') {
+					processedMessages.add(event.data.messageId);
+					currentAssistantMessage.chunks.push(event.data.chunkContent);
+				} else if (event.data.content && !processedMessages.has(event.data.messageId)) {
+					processAssistantMessage(event.data.content);
 				}
 				break;
 			}
@@ -277,15 +399,30 @@ export function buildChatHistoryFromEvents(events: readonly SessionEvent[]): (Ch
 				break;
 			}
 			case 'tool.execution_complete': {
-				const responsePart = processToolExecutionComplete(event, pendingToolInvocations);
-				if (responsePart && !(responsePart instanceof ChatResponseThinkingProgressPart)) {
-					currentResponseParts.push(responsePart);
+				const [responsePart, toolCall] = processToolExecutionComplete(event, pendingToolInvocations) ?? [undefined, undefined];
+				if (responsePart && toolCall && !(responsePart instanceof ChatResponseThinkingProgressPart)) {
+					const editId = details?.toolIdEditMap ? details.toolIdEditMap[toolCall.toolCallId] : undefined;
+					const editedUris = getAffectedUrisForEditTool(toolCall);
+					if (isCopilotCliEditToolCall(toolCall) && editId && editedUris.length > 0) {
+						responsePart.presentation = 'hidden';
+						currentResponseParts.push(responsePart);
+						for (const uri of editedUris) {
+							currentResponseParts.push(new ChatResponseMarkdownPart('\n````\n'));
+							currentResponseParts.push(new ChatResponseCodeblockUriPart(uri, true, editId));
+							currentResponseParts.push(new ChatResponseTextEditPart(uri, []));
+							currentResponseParts.push(new ChatResponseTextEditPart(uri, true));
+							currentResponseParts.push(new ChatResponseMarkdownPart('\n````\n'));
+						}
+					} else {
+						currentResponseParts.push(responsePart);
+					}
 				}
 				break;
 			}
 		}
 	}
 
+	flushPendingAssistantMessage();
 
 	if (currentResponseParts.length > 0) {
 		turns.push(new ChatResponseTurn2(currentResponseParts, {}, ''));
@@ -294,27 +431,36 @@ export function buildChatHistoryFromEvents(events: readonly SessionEvent[]): (Ch
 	return turns;
 }
 
-export function processToolExecutionStart(event: ToolExecutionStartEvent, pendingToolInvocations: Map<string, ChatToolInvocationPart | ChatResponseThinkingProgressPart>): ChatToolInvocationPart | ChatResponseThinkingProgressPart | undefined {
+function getRangeInPrompt(prompt: string, referencedName: string): [number, number] | undefined {
+	referencedName = `#${referencedName}`;
+	const index = prompt.indexOf(referencedName);
+	if (index >= 0) {
+		return [index, index + referencedName.length];
+	}
+	return undefined;
+}
+
+export function processToolExecutionStart(event: ToolExecutionStartEvent, pendingToolInvocations: Map<string, [ChatToolInvocationPart | ChatResponseThinkingProgressPart, toolData: ToolCall]>): ChatToolInvocationPart | ChatResponseThinkingProgressPart | undefined {
 	const toolInvocation = createCopilotCLIToolInvocation(event.data as ToolCall);
 	if (toolInvocation) {
 		// Store pending invocation to update with result later
-		pendingToolInvocations.set(event.data.toolCallId, toolInvocation);
+		pendingToolInvocations.set(event.data.toolCallId, [toolInvocation, event.data as ToolCall]);
 	}
 	return toolInvocation;
 }
 
-export function processToolExecutionComplete(event: ToolExecutionCompleteEvent, pendingToolInvocations: Map<string, ChatToolInvocationPart | ChatResponseThinkingProgressPart>): ChatToolInvocationPart | ChatResponseThinkingProgressPart | undefined {
+export function processToolExecutionComplete(event: ToolExecutionCompleteEvent, pendingToolInvocations: Map<string, [ChatToolInvocationPart | ChatResponseThinkingProgressPart, toolData: ToolCall]>): [ChatToolInvocationPart | ChatResponseThinkingProgressPart, toolData: ToolCall] | undefined {
 	const invocation = pendingToolInvocations.get(event.data.toolCallId);
 	pendingToolInvocations.delete(event.data.toolCallId);
 
-	if (invocation && invocation instanceof ChatToolInvocationPart) {
-		invocation.isComplete = true;
-		invocation.isError = !!event.data.error;
-		invocation.invocationMessage = event.data.error?.message || invocation.invocationMessage;
+	if (invocation && invocation[0] instanceof ChatToolInvocationPart) {
+		invocation[0].isComplete = true;
+		invocation[0].isError = !!event.data.error;
+		invocation[0].invocationMessage = event.data.error?.message || invocation[0].invocationMessage;
 		if (!event.data.success && (event.data.error?.code === 'rejected' || event.data.error?.code === 'denied')) {
-			invocation.isConfirmed = false;
+			invocation[0].isConfirmed = false;
 		} else {
-			invocation.isConfirmed = true;
+			invocation[0].isConfirmed = true;
 		}
 	}
 
@@ -324,8 +470,18 @@ export function processToolExecutionComplete(event: ToolExecutionCompleteEvent, 
 /**
  * Creates a formatted tool invocation part for CopilotCLI tools
  */
-export function createCopilotCLIToolInvocation(data: { toolCallId: string; toolName: string; arguments?: unknown }): ChatToolInvocationPart | ChatResponseThinkingProgressPart | undefined {
+export function createCopilotCLIToolInvocation(data: { toolCallId: string; toolName: string; arguments?: unknown }, editId?: string): ChatToolInvocationPart | ChatResponseThinkingProgressPart | undefined {
+	if (!Object.hasOwn(ToolFriendlyNameAndHandlers, data.toolName)) {
+		const invocation = new ChatToolInvocationPart(data.toolName ?? 'unknown', data.toolCallId ?? '', false);
+		invocation.isConfirmed = false;
+		invocation.isComplete = false;
+		formatGenericInvocation(invocation, data as ToolCall);
+		return invocation;
+	}
+
 	const toolCall = data as ToolCall;
+	// Ensures arguments is at least an empty object
+	toolCall.arguments = toolCall.arguments ?? {};
 	if (toolCall.toolName === 'report_intent') {
 		return undefined; // Ignore these for now
 	}
@@ -336,114 +492,118 @@ export function createCopilotCLIToolInvocation(data: { toolCallId: string; toolN
 		return undefined;
 	}
 
-	const invocation = new ChatToolInvocationPart(friendlyToolName(toolCall.toolName), toolCall.toolCallId ?? '', false);
+	const [friendlyToolName, formatter] = ToolFriendlyNameAndHandlers[toolCall.toolName];
+	const invocation = new ChatToolInvocationPart(friendlyToolName ?? toolCall.toolName ?? 'unknown', toolCall.toolCallId ?? '', false);
 	invocation.isConfirmed = false;
 	invocation.isComplete = false;
 
-	// Format based on tool name
-	if (toolCall.toolName === 'str_replace_editor') {
-		formatStrReplaceEditorInvocation(invocation, toolCall.arguments);
-	} else if (toolCall.toolName === 'bash' || toolCall.toolName === 'powershell') {
-		formatShellInvocation(invocation, toolCall.arguments, toolCall.toolName);
-	} else if (toolCall.toolName === 'read_bash' || toolCall.toolName === 'read_powershell') {
-		invocation.invocationMessage = l10n.t('Read logs from shell session');
-	} else if (toolCall.toolName === 'write_bash' || toolCall.toolName === 'write_powershell') {
-		invocation.invocationMessage = l10n.t('Send input to shell session');
-	} else if (toolCall.toolName === 'stop_bash' || toolCall.toolName === 'stop_powershell') {
-		invocation.invocationMessage = l10n.t('Stop shell session');
-	} else if (toolCall.toolName === 'view') {
-		formatViewToolInvocation(invocation, toolCall.arguments);
-	} else if (toolCall.toolName === 'edit') {
-		formatEditToolInvocation(invocation, toolCall.arguments);
-	} else if (toolCall.toolName === 'create') {
-		formatCreateToolInvocation(invocation, toolCall.arguments);
-	} else if (toolCall.toolName === 'report_progress') {
-		formatProgressToolInvocation(invocation, toolCall.arguments);
-	} else {
-		formatGenericInvocation(invocation, toolCall);
-	}
-
+	(formatter as Formatter)(invocation, toolCall, editId);
 	return invocation;
 }
 
-const FriendlyToolNames: Record<ToolCall['toolName'], string> = {
-	'edit': l10n.t('Edit File'),
-	'create': l10n.t('Create File'),
-	'bash': l10n.t('Run Shell Command'),
-	'powershell': l10n.t('Run Powershell Command'),
-	'write_bash': l10n.t('Write to Bash'),
-	'write_powershell': l10n.t('Write to PowerShell'),
-	'read_bash': l10n.t('Read Terminal'),
-	'read_powershell': l10n.t('Read Terminal'),
-	'stop_bash': l10n.t('Stop Terminal Session'),
-	'stop_powershell': l10n.t('Stop Terminal Session'),
-	'grep': l10n.t('Grep Tool'),
-	'glob': l10n.t('Glob Tool'),
-	'report_intent': l10n.t('Report Intent'),
-	'think': l10n.t('Thinking'),
-	'report_progress': l10n.t('Progress Update'),
-	'undo_edit': l10n.t('Undo Edit'),
-	'str_replace_editor': l10n.t('String Replace Editor'),
-	'view': l10n.t('View File'),
-	'insert': l10n.t('Insert Text')
+type Formatter = (invocation: ChatToolInvocationPart, toolCall: ToolCall, editId?: string) => void;
+type ToolCallFor<T extends ToolCall['toolName']> = Extract<ToolCall, { toolName: T }>;
+
+const ToolFriendlyNameAndHandlers: { [K in ToolCall['toolName']]: [string, (invocation: ChatToolInvocationPart, toolCall: ToolCallFor<K>) => void] } = {
+	'str_replace_editor': [l10n.t('Edit File'), formatStrReplaceEditorInvocation],
+	'edit': [l10n.t('Edit File'), formatEditToolInvocation],
+	'str_replace': [l10n.t('Edit File'), formatEditToolInvocation],
+	'create': [l10n.t('Create File'), formatCreateToolInvocation],
+	'insert': [l10n.t('Edit File'), formatInsertToolInvocation],
+	'undo_edit': [l10n.t('Edit File'), formatUndoEdit],
+	'view': [l10n.t('Read'), formatViewToolInvocation],
+	'bash': [l10n.t('Run Shell Command'), formatShellInvocation],
+	'powershell': [l10n.t('Run Shell Command'), formatShellInvocation],
+	'write_bash': [l10n.t('Write to Bash'), emptyInvocation],
+	'write_powershell': [l10n.t('Write to PowerShell'), emptyInvocation],
+	'read_bash': [l10n.t('Read Terminal'), emptyInvocation],
+	'read_powershell': [l10n.t('Read Terminal'), emptyInvocation],
+	'stop_bash': [l10n.t('Stop Terminal Session'), emptyInvocation],
+	'stop_powershell': [l10n.t('Stop Terminal Session'), emptyInvocation],
+	'search': [l10n.t('Search'), formatSearchToolInvocation],
+	'grep': [l10n.t('Search'), formatSearchToolInvocation],
+	'glob': [l10n.t('Search'), formatSearchToolInvocation],
+	'search_bash': [l10n.t('Search'), formatSearchToolInvocation],
+	'semantic_code_search': [l10n.t('Search'), formatSearchToolInvocation],
+	'reply_to_comment': [l10n.t('Reply to Comment'), formatReplyToCommentInvocation],
+	'code_review': [l10n.t('Code Review'), formatCodeReviewInvocation],
+	'report_intent': [l10n.t('Report Intent'), emptyInvocation],
+	'think': [l10n.t('Thinking'), emptyInvocation],
+	'report_progress': [l10n.t('Report Progress'), formatProgressToolInvocation],
 };
 
-function friendlyToolName(toolName: ToolCall['toolName']): string {
-	return FriendlyToolNames[toolName] || toolName || 'unknown';
-}
 
-function formatProgressToolInvocation(invocation: ChatToolInvocationPart, args: ReportProgressTool['arguments']): void {
+function formatProgressToolInvocation(invocation: ChatToolInvocationPart, toolCall: ReportProgressTool): void {
+	const args = toolCall.arguments;
 	invocation.invocationMessage = args.prDescription?.trim() || 'Progress Update';
 	if (args.commitMessage) {
 		invocation.originMessage = `Commit: ${args.commitMessage}`;
 	}
 }
-function formatViewToolInvocation(invocation: ChatToolInvocationPart, args: ViewTool['arguments']): void {
-	const path = args.path ?? '';
-	const display = path ? formatUriForMessage(path) : '';
 
-	if (args.view_range && args.view_range[1] >= args.view_range[0]) {
+
+function formatViewToolInvocation(invocation: ChatToolInvocationPart, toolCall: ViewTool): void {
+	const args = toolCall.arguments;
+
+	if (!args.path) {
+		return;
+	} else if (args.view_range && args.view_range[1] >= args.view_range[0]) {
+		const display = formatUriForFileWidget(Uri.file(args.path));
 		const [start, end] = args.view_range;
 		const localizedMessage = start === end
-			? l10n.t("Read {0} (line {1})", display, start)
-			: l10n.t("Read {0} (lines {1} to {2})", display, start, end);
+			? l10n.t("Read {0}, line {1}", display, start)
+			: l10n.t("Read {0}, lines {1} to {2}", display, start, end);
 		invocation.invocationMessage = new MarkdownString(localizedMessage);
-		return;
+	} else {
+		const display = formatUriForFileWidget(Uri.file(args.path));
+		invocation.invocationMessage = new MarkdownString(l10n.t("Read {0}", display));
 	}
-
-	invocation.invocationMessage = new MarkdownString(l10n.t("Read {0}", display));
 }
 
-function formatStrReplaceEditorInvocation(invocation: ChatToolInvocationPart, args: Extract<ToolCall, { toolName: 'str_replace_editor' }>['arguments']): void {
-	const command = args.command;
-	const path = args.path ?? '';
-	const display = path ? formatUriForMessage(path) : '';
-	switch (command) {
+function formatStrReplaceEditorInvocation(invocation: ChatToolInvocationPart, toolCall: StringReplaceEditorTool, editId?: string): void {
+	if (!toolCall.arguments.path) {
+		return;
+	}
+	const args = toolCall.arguments;
+	const display = formatUriForFileWidget(Uri.file(args.path));
+	switch (args.command) {
 		case 'view':
-			formatViewToolInvocation(invocation, args);
-			break;
-		case 'str_replace':
-			invocation.invocationMessage = new MarkdownString(l10n.t("Edited {0}", display));
+			formatViewToolInvocation(invocation, { toolName: 'view', arguments: args } as ViewTool);
 			break;
 		case 'edit':
-			formatEditToolInvocation(invocation, args);
+			formatEditToolInvocation(invocation, { toolName: 'edit', arguments: args } as EditTool);
 			break;
 		case 'insert':
-			invocation.invocationMessage = new MarkdownString(l10n.t("Inserted text in {0}", display));
+			formatInsertToolInvocation(invocation, { toolName: 'insert', arguments: args } as InsertTool);
 			break;
 		case 'create':
-			formatCreateToolInvocation(invocation, args);
+			formatCreateToolInvocation(invocation, { toolName: 'create', arguments: args } as CreateTool);
 			break;
 		case 'undo_edit':
-			invocation.invocationMessage = new MarkdownString(l10n.t("Undid edit in {0}", display));
+			formatUndoEdit(invocation, { toolName: 'undo_edit', arguments: args } as UndoEditTool);
 			break;
 		default:
 			invocation.invocationMessage = new MarkdownString(l10n.t("Modified {0}", display));
 	}
 }
 
-function formatEditToolInvocation(invocation: ChatToolInvocationPart, args: EditTool['arguments']): void {
-	const display = args.path ? formatUriForMessage(args.path) : '';
+function formatInsertToolInvocation(invocation: ChatToolInvocationPart, toolCall: InsertTool): void {
+	const args = toolCall.arguments;
+	if (args.path) {
+		invocation.invocationMessage = new MarkdownString(l10n.t("Inserted text in {0}", formatUriForFileWidget(Uri.file(args.path))));
+	}
+}
+
+function formatUndoEdit(invocation: ChatToolInvocationPart, toolCall: UndoEditTool): void {
+	const args = toolCall.arguments;
+	if (args.path) {
+		invocation.invocationMessage = new MarkdownString(l10n.t("Undid edit in {0}", formatUriForFileWidget(Uri.file(args.path))));
+	}
+}
+
+function formatEditToolInvocation(invocation: ChatToolInvocationPart, toolCall: EditTool, editId?: string): void {
+	const args = toolCall.arguments;
+	const display = args.path ? formatUriForFileWidget(Uri.file(args.path)) : '';
 
 	invocation.invocationMessage = display
 		? new MarkdownString(l10n.t("Edited {0}", display))
@@ -451,8 +611,9 @@ function formatEditToolInvocation(invocation: ChatToolInvocationPart, args: Edit
 }
 
 
-function formatCreateToolInvocation(invocation: ChatToolInvocationPart, args: CreateTool['arguments']): void {
-	const display = args.path ? formatUriForMessage(args.path) : '';
+function formatCreateToolInvocation(invocation: ChatToolInvocationPart, toolCall: CreateTool, editId?: string): void {
+	const args = toolCall.arguments;
+	const display = args.path ? formatUriForFileWidget(Uri.file(args.path)) : '';
 
 	if (display) {
 		invocation.invocationMessage = new MarkdownString(l10n.t("Created {0}", display));
@@ -461,7 +622,8 @@ function formatCreateToolInvocation(invocation: ChatToolInvocationPart, args: Cr
 	}
 }
 
-function formatShellInvocation(invocation: ChatToolInvocationPart, args: ShellTool['arguments'], toolName: ShellTool['toolName']): void {
+function formatShellInvocation(invocation: ChatToolInvocationPart, toolCall: ShellTool): void {
+	const args = toolCall.arguments;
 	const command = args.command ?? '';
 	// TODO @DonJayamanne This is the code in copilot cloud, discuss and decide if we want to use it.
 	// Not for Cli as we want users to see the exact command being run so they can review and approve it.
@@ -487,14 +649,43 @@ function formatShellInvocation(invocation: ChatToolInvocationPart, args: ShellTo
 		commandLine: {
 			original: command,
 		},
-		language: toolName === 'bash' ? 'bash' : 'powershell'
+		language: toolCall.toolName === 'bash' ? 'bash' : 'powershell'
 	} as ChatTerminalToolInvocationData;
+}
+function formatSearchToolInvocation(invocation: ChatToolInvocationPart, toolCall: SearchTool | GLobTool | GrepTool | SearchBashTool | SemanticCodeSearchTool): void {
+	if (toolCall.toolName === 'search') {
+		invocation.invocationMessage = `Criteria: ${toolCall.arguments.question}  \nReason: ${toolCall.arguments.reason}`;
+	} else if (toolCall.toolName === 'semantic_code_search') {
+		invocation.invocationMessage = `Criteria: ${toolCall.arguments.question}`;
+	} else if (toolCall.toolName === 'search_bash') {
+		invocation.invocationMessage = `Command: \`${toolCall.arguments.command}\``;
+	} else if (toolCall.toolName === 'glob') {
+		const searchInPath = toolCall.arguments.path ? ` in \`${toolCall.arguments.path}\`` : '';
+		invocation.invocationMessage = `Pattern: \`${toolCall.arguments.pattern}\`${searchInPath}`;
+	} else if (toolCall.toolName === 'grep') {
+		const searchInPath = toolCall.arguments.path ? ` in \`${toolCall.arguments.path}\`` : '';
+		invocation.invocationMessage = `Pattern: \`${toolCall.arguments.pattern}\`${searchInPath}`;
+	}
+}
+
+function formatCodeReviewInvocation(invocation: ChatToolInvocationPart, toolCall: CodeReviewTool): void {
+	invocation.invocationMessage = toolCall.arguments.prTitle;
+	invocation.originMessage = toolCall.arguments.prDescription;
+}
+
+function formatReplyToCommentInvocation(invocation: ChatToolInvocationPart, toolCall: ReplyToCommentTool): void {
+	invocation.invocationMessage = `Replied to comment_id ${toolCall.arguments.comment_id}`;
+	invocation.originMessage = toolCall.arguments.reply;
 }
 
 function formatGenericInvocation(invocation: ChatToolInvocationPart, toolCall: UnknownToolCall): void {
-	invocation.invocationMessage = l10n.t("Used tool: {0}", toolCall.toolName);
+	invocation.invocationMessage = l10n.t("Used tool: {0}", toolCall.toolName ?? 'unknown');
 }
 
-function formatUriForMessage(path: string): string {
-	return `[](${URI.file(path).toString()})`;
+/**
+ * No-op formatter for tool invocations that do not require custom formatting.
+ * The `toolCall` parameter is unused and present for interface consistency.
+ */
+function emptyInvocation(_invocation: ChatToolInvocationPart, _toolCall: UnknownToolCall): void {
+	//
 }

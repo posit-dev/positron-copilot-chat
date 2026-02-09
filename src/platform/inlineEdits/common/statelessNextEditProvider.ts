@@ -5,6 +5,7 @@
 
 import { Raw } from '@vscode/prompt-tsx';
 import { Result } from '../../../util/common/result';
+import { ITracer } from '../../../util/common/tracing';
 import { assert, assertNever } from '../../../util/vs/base/common/assert';
 import { DeferredPromise } from '../../../util/vs/base/common/async';
 import { CancellationToken, CancellationTokenSource } from '../../../util/vs/base/common/cancellation';
@@ -30,13 +31,19 @@ export const enum ShowNextEditPreference {
 	AroundEdit = 'aroundEdit',
 }
 
-export type PushEdit = (edit: Result<{ edit: LineReplacement; window?: OffsetRange; targetDocument?: DocumentId; showLabel?: boolean }, NoNextEditReason>) => void;
+export type StreamedEdit = {
+	readonly edit: LineReplacement;
+	readonly window?: OffsetRange;
+	readonly targetDocument?: DocumentId;
+}
+
+export type PushEdit = (edit: Result<StreamedEdit, NoNextEditReason>) => void;
 
 export interface IStatelessNextEditProvider {
 	readonly ID: string;
 	readonly dependsOnSelection?: boolean;
 	readonly showNextEditPreference?: ShowNextEditPreference;
-	provideNextEdit(request: StatelessNextEditRequest, pushEdit: PushEdit, logContext: InlineEditRequestLogContext, cancellationToken: CancellationToken): Promise<StatelessNextEditResult>;
+	provideNextEdit(request: StatelessNextEditRequest, pushEdit: PushEdit, tracer: ITracer, logContext: InlineEditRequestLogContext, cancellationToken: CancellationToken): Promise<StatelessNextEditResult>;
 	handleAcceptance?(): void;
 	handleRejection?(): void;
 }
@@ -211,7 +218,7 @@ export namespace NoNextEditReason {
 	}
 	export class GotCancelled extends NoNextEditReason {
 		public readonly kind = 'gotCancelled';
-		constructor(public readonly message: 'afterDebounce' | 'afterGettingEndpoint' | 'afterLanguageContextAwait' | 'afterPromptConstruction' | 'afterFetchCall' | 'duringStreaming' | 'afterResponse' | 'afterFailedRebase' | 'beforeExecutingNewRequest') {
+		constructor(public readonly message: 'afterDebounce' | 'afterGettingEndpoint' | 'afterLanguageContextAwait' | 'afterPromptConstruction' | 'afterFetchCall' | 'duringStreaming' | 'afterResponse' | 'afterFailedRebase' | 'beforeExecutingNewRequest' | 'afterArtificialDelay') {
 			super();
 		}
 
@@ -342,10 +349,11 @@ export interface IStatelessNextEditTelemetry {
 	readonly noNextEditReasonMessage: string | undefined;
 
 	/* next cursor line info */
-
-	readonly nextCursorLineError: string | undefined;
-	/** nextCursorLineNumber - currentCursorLineNumber */
-	readonly nextCursorLineDistance: number | undefined;
+	readonly nextCursorPrediction: {
+		nextCursorLineError: string | undefined;
+		/** nextCursorLineNumber - currentCursorLineNumber */
+		nextCursorLineDistance: number | undefined;
+	};
 }
 
 export type FetchResultWithStats = {
@@ -414,8 +422,7 @@ export class StatelessNextEditTelemetryBuilder {
 			response: this._response,
 			nEditsSuggested: this._nEditsSuggested,
 			nextEditLogprob: this._nextEditLogProb,
-			nextCursorLineError: this._nextCursorLineError,
-			nextCursorLineDistance: this._nextCursorLineDistance,
+			nextCursorPrediction: this._nextCursorPrediction,
 			lineDistanceToMostRecentEdit: this._lineDistanceToMostRecentEdit,
 		};
 	}
@@ -520,18 +527,21 @@ export class StatelessNextEditTelemetryBuilder {
 		return this;
 	}
 
-	private _nextCursorLineError: string | undefined;
+	private _nextCursorPrediction: IStatelessNextEditTelemetry['nextCursorPrediction'] = {
+		nextCursorLineError: undefined,
+		nextCursorLineDistance: undefined
+	};
+
 	public setNextCursorLineError(error: string): this {
-		this._nextCursorLineError = error;
+		this._nextCursorPrediction.nextCursorLineError = error;
 		return this;
 	}
 
-	private _nextCursorLineDistance: number | undefined;
 	/**
 	 * nextCursorLineNumber - currentCursorLineNumber
 	 */
 	public setNextCursorLineDistance(distance: number): this {
-		this._nextCursorLineDistance = distance;
+		this._nextCursorPrediction.nextCursorLineDistance = distance;
 		return this;
 	}
 }

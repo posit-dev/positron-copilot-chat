@@ -78,6 +78,13 @@ export interface Remote {
 	readonly isReadOnly: boolean;
 }
 
+export interface Worktree {
+	readonly name: string;
+	readonly path: string;
+	readonly ref: string;
+	readonly detached: boolean;
+}
+
 export const enum Status {
 	INDEX_MODIFIED,
 	INDEX_ADDED,
@@ -115,11 +122,17 @@ export interface Change {
 	readonly status: Status;
 }
 
+export interface DiffChange extends Change {
+	readonly insertions: number;
+	readonly deletions: number;
+}
+
 export interface RepositoryState {
 	readonly HEAD: Branch | undefined;
 	readonly refs: Ref[];
 	readonly remotes: Remote[];
 	readonly submodules: Submodule[];
+	readonly worktrees: Worktree[];
 	readonly rebaseCommit: Commit | undefined;
 
 	readonly mergeChanges: Change[];
@@ -244,6 +257,8 @@ export interface Repository {
 	diffBlobs(object1: string, object2: string): Promise<string>;
 	diffBetween(ref1: string, ref2: string): Promise<Change[]>;
 	diffBetween(ref1: string, ref2: string, path: string): Promise<string>;
+	diffBetweenWithStats(ref1: string, ref2: string, path?: string): Promise<DiffChange[]>;
+
 
 	hashObject(data: string): Promise<string>;
 
@@ -281,6 +296,15 @@ export interface Repository {
 	commit(message: string, opts?: CommitOptions): Promise<void>;
 	merge(ref: string): Promise<void>;
 	mergeAbort(): Promise<void>;
+
+	applyStash(index?: number): Promise<void>;
+	popStash(index?: number): Promise<void>;
+	dropStash(index?: number): Promise<void>;
+
+	createWorktree(options?: { path?: string; commitish?: string; branch?: string }): Promise<string>;
+	deleteWorktree(path: string, options?: { force?: boolean }): Promise<void>;
+
+	migrateChanges(sourceRepositoryPath: string, options?: { confirmation?: boolean; deleteFromSource?: boolean; untracked?: boolean }): Promise<void>;
 }
 
 export interface RemoteSource {

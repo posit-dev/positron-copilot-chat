@@ -52,7 +52,6 @@ import { NullGitExtensionService } from '../../git/common/nullGitExtensionServic
 import { IGithubRepositoryService, IOctoKitService } from '../../github/common/githubService';
 import { OctoKitService } from '../../github/common/octoKitServiceImpl';
 import { GithubRepositoryService } from '../../github/node/githubRepositoryService';
-import { IHeatmapService, nullHeatmapService } from '../../heatmap/common/heatmapService';
 import { IIgnoreService, NullIgnoreService } from '../../ignore/common/ignoreService';
 import { IImageService, nullImageService } from '../../image/common/imageService';
 import { IInteractiveSessionService } from '../../interactive/common/interactiveSessionService';
@@ -254,7 +253,6 @@ export function createPlatformServices(disposables: Pick<DisposableStore, 'add'>
 	testingServiceCollection.define(ILanguageFeaturesService, new SyncDescriptor(NoopLanguageFeaturesService));
 	testingServiceCollection.define(IRunCommandExecutionService, new SyncDescriptor(MockRunCommandExecutionService));
 	testingServiceCollection.define(INaiveChunkingService, new SyncDescriptor(NaiveChunkingService));
-	testingServiceCollection.define(IHeatmapService, nullHeatmapService);
 	testingServiceCollection.define(IImageService, nullImageService);
 	testingServiceCollection.define(ILanguageContextService, NullLanguageContextService);
 	testingServiceCollection.define(ILanguageContextProviderService, new SyncDescriptor(NullLanguageContextProviderService));
@@ -272,7 +270,7 @@ export function createPlatformServices(disposables: Pick<DisposableStore, 'add'>
 	testingServiceCollection.define(ISnippyService, new SyncDescriptor(NullSnippyService));
 	testingServiceCollection.define(IInteractiveSessionService, new SyncDescriptor(class implements IInteractiveSessionService {
 		_serviceBrand: undefined;
-		transferActiveChat(workspaceUri: Uri): void {
+		async transferActiveChat(workspaceUri: Uri): Promise<void> {
 			throw new Error('Method not implemented.');
 		}
 	}));
