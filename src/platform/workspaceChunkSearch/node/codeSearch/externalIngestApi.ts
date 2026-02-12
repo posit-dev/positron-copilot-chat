@@ -3,12 +3,16 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
+import { raceCancellationError } from '../../../../util/vs/base/common/async';
 import { CancellationToken } from '../../../../util/vs/base/common/cancellation';
+import { CancellationError } from '../../../../util/vs/base/common/errors';
+import { IDisposable } from '../../../../util/vs/base/common/lifecycle';
+import { ILogService } from '../../../log/common/logService';
 
 // Sliding window that holds at least N entries and all entries in the time window.
 // This allows the sliding window to always hold some entries if inserts are infrequent,
 // but if inserts are frequent enough then time window behavior takes over.
-class SlidingTimeAndNWindow {
+class SlidingTimeAndNWindow implements IDisposable {
 	private values: number[] = [];
 	private times: number[] = [];
 	private sumValues = 0;
@@ -20,6 +24,12 @@ class SlidingTimeAndNWindow {
 		this.numEntries = numEntries;
 		this.windowDurationMs = windowDurationMs;
 		this.startPeriodicCleanup();
+	}
+
+	dispose(): void {
+		if (typeof this.cleanupInterval !== 'undefined') {
+			clearInterval(this.cleanupInterval);
+		}
 	}
 
 	increment(n: number): void {
@@ -84,12 +94,6 @@ class SlidingTimeAndNWindow {
 			}
 		}, 100);
 	}
-
-	destroy(): void {
-		if (this.cleanupInterval) {
-			clearInterval(this.cleanupInterval);
-		}
-	}
 }
 
 class Throttler {
@@ -109,8 +113,8 @@ class Throttler {
 	reset(): void {
 		if (this.numOutstandingRequests === 0) {
 			this.lastSendTime = Date.now();
-			this.totalQuotaUsedWindow.destroy();
-			this.sendPeriodWindow.destroy();
+			this.totalQuotaUsedWindow.dispose();
+			this.sendPeriodWindow.dispose();
 			this.totalQuotaUsedWindow = new SlidingTimeAndNWindow(5, 2000);
 			this.sendPeriodWindow = new SlidingTimeAndNWindow(5, 2000);
 		}
@@ -179,17 +183,27 @@ class Throttler {
 		return shouldSend;
 	}
 
-	destroy(): void {
-		this.totalQuotaUsedWindow.destroy();
-		this.sendPeriodWindow.destroy();
+	dispose(): void {
+		this.totalQuotaUsedWindow.dispose();
+		this.sendPeriodWindow.dispose();
 	}
 }
 
-// This API client performs requests and will manage back-off when being rate limited
-class ApiClient {
-	private throttler: Throttler | null;
+export const githubHeaders = Object.freeze({
+	requestId: 'x-github-request-id',
+	totalQuotaUsed: 'x-github-total-quota-used',
+});
 
-	constructor(target: number | null = 80) {
+/**
+ * This API client performs requests and will manage back-off when being rate limited
+ */
+export class ApiClient implements IDisposable {
+	private readonly throttler: Throttler | null;
+
+	constructor(
+		target: number | null = 80,
+		@ILogService private readonly logService: ILogService,
+	) {
 		if (target === null) {
 			this.throttler = null;
 		} else {
@@ -208,10 +222,15 @@ class ApiClient {
 			while (!this.throttler.shouldSendRequest()) {
 				// Sleep a little while so that we don't have a constantly running loop.
 				// We probably shouldn't send requests more than this frequently anyway.
-				await sleep(5);
+				await raceCancellationError(sleep(5), token);
 			}
 			this.throttler.requestStarted();
 		}
+
+		if (token.isCancellationRequested) {
+			throw new CancellationError();
+		}
+
 		try {
 			const res = await fetch(url, {
 				method,
@@ -219,34 +238,30 @@ class ApiClient {
 				body: body ? JSON.stringify(body) : undefined,
 			});
 			if (!res.ok) {
-				const requestId = res.headers.get('x-github-request-id');
+				const requestId = res.headers.get(githubHeaders.requestId);
 				const responseBody = await res.text();
-				const message = `${method} to ${url} request failed with status: '${res.status}', requestId: '${requestId}', body: ${responseBody}`;
-				console.error(message);
-				throw new Error(message);
+				this.logService.error(`${method} to ${url} request failed with status: '${res.status}', requestId: '${requestId}', body: ${responseBody}`);
+				return res;
 			}
-			const quotaUsedHeader = res.headers.get('x-github-total-quota-used');
+			const quotaUsedHeader = res.headers.get(githubHeaders.totalQuotaUsed);
 			const quotaUsed = quotaUsedHeader ? parseFloat(quotaUsedHeader) : 0;
 			if (this.throttler && quotaUsed > 0) {
 				this.throttler.recordQuotaUsed(quotaUsed);
 			}
 			return res;
+		} catch (e) {
+			this.logService.error(`${method} to ${url} request threw with error: ${e}`);
+			throw e;
 		} finally {
-			if (this.throttler) {
-				this.throttler.requestFinished();
-			}
+			this.throttler?.requestFinished();
 		}
 	}
 
-	destroy(): void {
-		if (this.throttler) {
-			this.throttler.destroy();
-		}
+	dispose(): void {
+		this.throttler?.dispose();
 	}
 }
 
 async function sleep(ms: number): Promise<void> {
 	return new Promise((resolve) => setTimeout(resolve, ms));
 }
-
-export { ApiClient };

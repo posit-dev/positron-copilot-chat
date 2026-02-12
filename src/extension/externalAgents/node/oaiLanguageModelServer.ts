@@ -6,7 +6,6 @@
 import { RequestMetadata } from '@vscode/copilot-api';
 import { Raw } from '@vscode/prompt-tsx';
 import * as http from 'http';
-import { ClientHttp2Stream } from 'http2';
 import type OpenAI from 'openai';
 import { IChatMLFetcher, Source } from '../../../platform/chat/common/chatMLFetcher';
 import { ChatLocation, ChatResponse } from '../../../platform/chat/common/commonTypes';
@@ -385,10 +384,6 @@ class StreamingPassThroughEndpoint implements IChatEndpoint {
 		return this.base.restrictedToSkus;
 	}
 
-	public get isDefault(): boolean {
-		return this.base.isDefault;
-	}
-
 	public get isFallback(): boolean {
 		return this.base.isFallback;
 	}
@@ -438,7 +433,7 @@ class StreamingPassThroughEndpoint implements IChatEndpoint {
 		telemetryData: TelemetryData,
 		cancellationToken?: CancellationToken
 	): Promise<AsyncIterableObject<ChatCompletion>> {
-		const body = (await response.body()) as ClientHttp2Stream;
+		const body = response.body;
 		return new AsyncIterableObject<ChatCompletion>(async feed => {
 			// We parse the stream just to return a correct ChatCompletion for logging the response and token usage details.
 			const requestId = response.headers.get('X-Request-ID') ?? generateUuid();
@@ -466,9 +461,7 @@ class StreamingPassThroughEndpoint implements IChatEndpoint {
 					parser.feed(chunk);
 				}
 			} finally {
-				if (!body.destroyed) {
-					body.destroy();
-				}
+				await body.destroy();
 			}
 		});
 	}
