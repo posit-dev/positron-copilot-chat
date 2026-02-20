@@ -238,6 +238,9 @@ export class LanguageModelAccess extends Disposable implements IExtensionContrib
 		token: vscode.CancellationToken
 	): Promise<void> {
 		// --- Start Positron ---
+		/*
+		const endpoint = this._chatEndpoints.find(e => e.model === ModelAliasRegistry.resolveAlias(model.id));
+		*/
 		// This vscode.lm path fails for the 'auto' pseudo-model because its .model
 		// property reflects the wrapped endpoint (e.g. 'gpt-4o'), not the pseudo-id
 		// 'auto', so the alias lookup finds no match. The built-in copilot participant's
@@ -267,6 +270,9 @@ export class LanguageModelAccess extends Disposable implements IExtensionContrib
 		token: vscode.CancellationToken
 	): Promise<number> {
 		// --- Start Positron ---
+		/*
+		const endpoint = this._chatEndpoints.find(e => e.model === ModelAliasRegistry.resolveAlias(model.id));
+		*/
 		// See comment in _provideLanguageModelChatResponse above.
 		let endpoint: IChatEndpoint | undefined;
 		if (model.id === AutoChatEndpoint.pseudoModelId) {
