@@ -312,7 +312,23 @@ export class LanguageModelAccess extends Disposable implements IExtensionContrib
 		progress: vscode.Progress<vscode.LanguageModelResponsePart2>,
 		token: vscode.CancellationToken
 	): Promise<void> {
+		// --- Start Positron ---
+		/*
 		const endpoint = this._chatEndpoints.find(e => e.model === ModelAliasRegistry.resolveAlias(model.id));
+		*/
+		// This vscode.lm path fails for the 'auto' pseudo-model because its .model
+		// property reflects the wrapped endpoint (e.g. 'gpt-4o'), not the pseudo-id
+		// 'auto', so the alias lookup finds no match. The built-in copilot participant's
+		// path already handles this via a pseudoModelId check in
+		// endpointProviderImpl.ts getChatEndpoint().
+		let endpoint: IChatEndpoint | undefined;
+		if (model.id === AutoChatEndpoint.pseudoModelId) {
+			endpoint = this._chatEndpoints.find(e => e instanceof AutoChatEndpoint);
+		} else {
+			endpoint = this._chatEndpoints.find(e => e.model === ModelAliasRegistry.resolveAlias(model.id));
+		}
+		// --- End Positron ---
+
 		if (!endpoint) {
 			throw new Error(`Endpoint not found for model ${model.id}`);
 		}
@@ -328,7 +344,19 @@ export class LanguageModelAccess extends Disposable implements IExtensionContrib
 		text: string | vscode.LanguageModelChatMessage | vscode.LanguageModelChatMessage2,
 		token: vscode.CancellationToken
 	): Promise<number> {
+		// --- Start Positron ---
+		/*
 		const endpoint = this._chatEndpoints.find(e => e.model === ModelAliasRegistry.resolveAlias(model.id));
+		*/
+		// See comment in _provideLanguageModelChatResponse above.
+		let endpoint: IChatEndpoint | undefined;
+		if (model.id === AutoChatEndpoint.pseudoModelId) {
+			endpoint = this._chatEndpoints.find(e => e instanceof AutoChatEndpoint);
+		} else {
+			endpoint = this._chatEndpoints.find(e => e.model === ModelAliasRegistry.resolveAlias(model.id));
+		}
+		// --- End Positron ---
+
 		if (!endpoint) {
 			throw new Error(`Endpoint not found for model ${model.id}`);
 		}
