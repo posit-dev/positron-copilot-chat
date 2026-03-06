@@ -9,12 +9,16 @@ import type { ChatRequest, ChatResponseReferencePart, ChatResponseStream, ChatRe
 import { IAuthenticationService } from '../../../platform/authentication/common/authentication';
 import { IAuthenticationChatUpgradeService } from '../../../platform/authentication/common/authenticationUpgrade';
 import { ICopilotTokenStore } from '../../../platform/authentication/common/copilotTokenStore';
+import { IChatHookService } from '../../../platform/chat/common/chatHookService';
 import { CanceledResult, ChatFetchResponseType, ChatLocation, ChatResponse, getErrorDetailsFromChatFetchError } from '../../../platform/chat/common/commonTypes';
 import { IConversationOptions } from '../../../platform/chat/common/conversationOptions';
+import { IConfigurationService } from '../../../platform/configuration/common/configurationService';
 import { IEditSurvivalTrackerService, IEditSurvivalTrackingSession, NullEditSurvivalTrackingSession } from '../../../platform/editSurvivalTracking/common/editSurvivalTrackerService';
+import { isAnthropicFamily } from '../../../platform/endpoint/common/chatModelCapabilities';
 import { IEndpointProvider } from '../../../platform/endpoint/common/endpointProvider';
 import { HAS_IGNORED_FILES_MESSAGE } from '../../../platform/ignore/common/ignoreService';
 import { ILogService } from '../../../platform/log/common/logService';
+import { isAnthropicToolSearchEnabled } from '../../../platform/networking/common/anthropic';
 import { IResponseDelta, OptionalChatRequestParams } from '../../../platform/networking/common/fetch';
 import { FilterReason } from '../../../platform/networking/common/openai';
 import { CapturingToken } from '../../../platform/requestLogger/common/capturingToken';
@@ -43,7 +47,7 @@ import { normalizeToolSchema } from '../../tools/common/toolSchemaNormalizer';
 import { ToolCallCancelledError } from '../../tools/common/toolsService';
 import { IToolGrouping, IToolGroupingService } from '../../tools/common/virtualTools/virtualToolTypes';
 import { ChatVariablesCollection } from '../common/chatVariablesCollection';
-import { Conversation, getUniqueReferences, GlobalContextMessageMetadata, IResultMetadata, RenderedUserMessageMetadata, RequestDebugInformation, ResponseStreamParticipant, Turn, TurnStatus } from '../common/conversation';
+import { AnthropicTokenUsageMetadata, Conversation, getUniqueReferences, GlobalContextMessageMetadata, IResultMetadata, RenderedUserMessageMetadata, RequestDebugInformation, ResponseStreamParticipant, Turn, TurnStatus } from '../common/conversation';
 import { IBuildPromptContext, IToolCallRound } from '../common/intents';
 import { isToolCallLimitCancellation } from '../common/specialRequestTypes';
 import { ChatTelemetry, ChatTelemetryBuilder } from './chatParticipantTelemetry';
@@ -94,6 +98,7 @@ export class DefaultIntentRequestHandler {
 		@IEditSurvivalTrackerService private readonly _editSurvivalTrackerService: IEditSurvivalTrackerService,
 		@IAuthenticationService private readonly _authenticationService: IAuthenticationService,
 		@IEndpointProvider private readonly _endpointProvider: IEndpointProvider,
+		@IChatHookService private readonly _chatHookService: IChatHookService,
 	) {
 		// Initialize properties
 		this.turn = conversation.getLatestTurn();
@@ -125,7 +130,19 @@ export class DefaultIntentRequestHandler {
 				return confirmationResult;
 			}
 
-			const resultDetails = await this._requestLogger.captureInvocation(new CapturingToken(this.request.prompt, 'comment', false), () => this.runWithToolCalling(intentInvocation));
+			// For subagent requests, use the subAgentInvocationId as the session ID.
+			// This enables explicit linking between the parent's runSubagent tool call and the subagent trajectory.
+			// For main requests, use the VS Code chat sessionId directly as the trajectory session ID.
+			const capturingToken = new CapturingToken(
+				this.request.prompt,
+				'comment',
+				false,
+				false,
+				this.request.subAgentInvocationId,
+				this.request.subAgentName,
+				this.request.sessionId,
+			);
+			const resultDetails = await this._requestLogger.captureInvocation(capturingToken, () => this.runWithToolCalling(intentInvocation));
 
 			let chatResult = resultDetails.chatResult || {};
 			this._surveyService.signalUsage(`${this.location === ChatLocation.Editor ? 'inline' : 'panel'}.${this.intent.id}`, this.documentContext?.document.languageId);
@@ -237,8 +254,8 @@ export class DefaultIntentRequestHandler {
 		const interactionOutcomeComputer = new InteractionOutcomeComputer(this.documentContext?.document.uri);
 		participants.push(stream => interactionOutcomeComputer.spyOnStream(stream));
 
-		// 4. Linkify the stream unless told otherwise
-		if (!intentInvocation.linkification?.disable) {
+		// 4. Linkify the stream unless told otherwise, or if this is a subagent request
+		if (!intentInvocation.linkification?.disable && !this.request.subAgentInvocationId) {
 			participants.push(stream => {
 				const linkStream = this._instantiationService.createInstance(ResponseStreamWithLinkification, { requestId: this.turn.id, references: this.turn.references }, stream, intentInvocation.linkification?.additionaLinkifiers ?? [], this.token);
 				return ChatResponseStreamImpl.spy(linkStream, p => p, () => {
@@ -328,6 +345,11 @@ export class DefaultIntentRequestHandler {
 		const pauseCtrl = store.add(new PauseController(this.onPaused, this.token));
 
 		try {
+			try {
+				await this._chatHookService.executeHook('userPromptSubmitted', { toolInvocationToken: this.request.toolInvocationToken, input: {} });
+			} catch (error) {
+				this._logService.error('[DefaultIntentRequestHandler] Error executing userPromptSubmitted hook', error);
+			}
 			const result = await loop.run(this.stream, pauseCtrl);
 			if (!result.round.toolCalls.length || result.response.type !== ChatFetchResponseType.Success) {
 				loop.telemetry.sendToolCallingTelemetry(result.toolCallRounds, result.availableTools, this.token.isCancellationRequested ? 'cancelled' : result.response.type);
@@ -351,7 +373,8 @@ export class DefaultIntentRequestHandler {
 		const summarizedConversationHistory = this.turn.getMetadata(SummarizedConversationHistoryMetadata);
 		const renderedUserMessageMetadata = this.turn.getMetadata(RenderedUserMessageMetadata);
 		const globalContextMetadata = this.turn.getMetadata(GlobalContextMessageMetadata);
-		return codeBlocks || summarizedConversationHistory || renderedUserMessageMetadata || globalContextMetadata ?
+		const anthropicTokenUsageMetadata = this.turn.getMetadata(AnthropicTokenUsageMetadata);
+		return codeBlocks || summarizedConversationHistory || renderedUserMessageMetadata || globalContextMetadata || anthropicTokenUsageMetadata ?
 			{
 				...chatResult,
 				metadata: {
@@ -360,6 +383,7 @@ export class DefaultIntentRequestHandler {
 					...summarizedConversationHistory && { summary: summarizedConversationHistory },
 					...renderedUserMessageMetadata,
 					...globalContextMetadata,
+					...anthropicTokenUsageMetadata,
 				} satisfies Partial<IResultMetadata>,
 			} : chatResult;
 	}
@@ -521,13 +545,14 @@ class DefaultToolCallingLoop extends ToolCallingLoop<IDefaultToolLoopOptions> {
 		@IEndpointProvider endpointProvider: IEndpointProvider,
 		@IAuthenticationChatUpgradeService authenticationChatUpgradeService: IAuthenticationChatUpgradeService,
 		@ITelemetryService telemetryService: ITelemetryService,
+		@IExperimentationService experimentationService: IExperimentationService,
+		@IConfigurationService configurationService: IConfigurationService,
 		@IToolGroupingService private readonly toolGroupingService: IToolGroupingService,
-		@IExperimentationService private readonly _experimentationService: IExperimentationService,
 		@ICopilotTokenStore private readonly _copilotTokenStore: ICopilotTokenStore,
 	) {
-		super(options, instantiationService, endpointProvider, logService, requestLogger, authenticationChatUpgradeService, telemetryService);
+		super(options, instantiationService, endpointProvider, logService, requestLogger, authenticationChatUpgradeService, telemetryService, configurationService, experimentationService);
 
-		this._register(this.onDidBuildPrompt(({ result, tools, promptTokenLength }) => {
+		this._register(this.onDidBuildPrompt(({ result, tools, promptTokenLength, toolTokenCount }) => {
 			if (result.metadata.get(SummarizedConversationHistoryMetadata)) {
 				this.toolGrouping?.didInvalidateCache();
 			}
@@ -541,7 +566,8 @@ class DefaultToolCallingLoop extends ToolCallingLoop<IDefaultToolLoopOptions> {
 				result.references,
 				options.invocation.endpoint,
 				result.metadata.getAll(TelemetryData) ?? [],
-				tools.length
+				tools.length,
+				toolTokenCount
 			);
 		}));
 
@@ -678,8 +704,8 @@ class DefaultToolCallingLoop extends ToolCallingLoop<IDefaultToolLoopOptions> {
 
 	protected override async fetch(opts: ToolCallingLoopFetchOptions, token: CancellationToken): Promise<ChatResponse> {
 		const messageSourcePrefix = this.options.location === ChatLocation.Editor ? 'inline' : 'chat';
-		const debugName = this.options.request.isSubagent ?
-			`tool/runSubagent` :
+		const debugName = this.options.request.subAgentInvocationId ?
+			`tool/runSubagent${this.options.request.subAgentName ? `-${this.options.request.subAgentName}` : ''}` :
 			`${ChatLocation.toStringShorter(this.options.location)}/${this.options.intent?.id}`;
 		return this.options.invocation.endpoint.makeChatRequest2({
 			...opts,
@@ -705,6 +731,8 @@ class DefaultToolCallingLoop extends ToolCallingLoop<IDefaultToolLoopOptions> {
 				messageId: this.telemetry.telemetryMessageId,
 				conversationId: this.options.conversation.sessionId,
 				messageSource: this.options.intent?.id && this.options.intent.id !== UnknownIntent.ID ? `${messageSourcePrefix}.${this.options.intent.id}` : `${messageSourcePrefix}.user`,
+				subType: this.options.request.subAgentInvocationId ? `subagent` : undefined,
+				parentRequestId: this.options.request.parentRequestId,
 			},
 			enableRetryOnFilter: true
 		}, token);
@@ -712,6 +740,12 @@ class DefaultToolCallingLoop extends ToolCallingLoop<IDefaultToolLoopOptions> {
 
 	protected override async getAvailableTools(outputStream: ChatResponseStream | undefined, token: CancellationToken): Promise<LanguageModelToolInformation[]> {
 		const tools = await this.options.invocation.getAvailableTools?.() ?? [];
+
+		// Skip tool grouping when Anthropic tool search is enabled
+		if (isAnthropicFamily(this.options.invocation.endpoint) && isAnthropicToolSearchEnabled(this.options.invocation.endpoint, this._configurationService, this._experimentationService)) {
+			return tools;
+		}
+
 		if (this.toolGrouping) {
 			this.toolGrouping.tools = tools;
 		} else {

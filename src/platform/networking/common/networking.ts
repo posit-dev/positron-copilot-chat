@@ -17,7 +17,8 @@ import { CustomModel, EndpointEditToolName } from '../../endpoint/common/endpoin
 import { ILogService } from '../../log/common/logService';
 import { ITelemetryService, TelemetryProperties } from '../../telemetry/common/telemetry';
 import { TelemetryData } from '../../telemetry/common/telemetryData';
-import { AnthropicMessagesTool, FinishedCallback, OpenAiFunctionTool, OpenAiResponsesFunctionTool, OptionalChatRequestParams, Prediction } from './fetch';
+import { AnthropicMessagesTool, ContextManagement } from './anthropic';
+import { FinishedCallback, OpenAiFunctionTool, OpenAiResponsesFunctionTool, OptionalChatRequestParams, Prediction } from './fetch';
 import { FetcherId, FetchOptions, IAbortController, IFetcherService, PaginationOptions, Response } from './fetcherService';
 import { ChatCompletion, RawMessageConversionCallback, rawMessageToCAPI } from './openai';
 
@@ -72,7 +73,7 @@ export interface IEndpointBody {
 	messages?: any[];
 	n?: number;
 	reasoning?: { effort?: string; summary?: string };
-	tool_choice?: OptionalChatRequestParams['tool_choice'] | { type: 'function'; name: string };
+	tool_choice?: OptionalChatRequestParams['tool_choice'] | { type: 'function'; name: string } | string;
 	top_logprobs?: number;
 	intent?: boolean;
 	intent_threshold?: number;
@@ -111,6 +112,7 @@ export interface IEndpointBody {
 		type: 'enabled' | 'disabled';
 		budget_tokens?: number;
 	};
+	context_management?: ContextManagement;
 
 	/** ChatCompletions API for Anthropic models */
 	thinking_budget?: number;
@@ -122,7 +124,7 @@ export interface IEndpointFetchOptions {
 
 export interface IEndpoint {
 	readonly urlOrRequestMetadata: string | RequestMetadata;
-	getExtraHeaders?(): Record<string, string>;
+	getExtraHeaders?(location?: ChatLocation): Record<string, string>;
 	getEndpointFetchOptions?(): IEndpointFetchOptions;
 	interceptBody?(body: IEndpointBody | undefined): void;
 	acquireTokenizer(): ITokenizer;
@@ -172,6 +174,10 @@ export interface IMakeChatRequestOptions {
 	useFetcher?: FetcherId;
 	/** Disable extended thinking for this request. Used when resuming from tool call errors where the original thinking blocks are not available. */
 	disableThinking?: boolean;
+	/** Enable retrying once on simple network errors like ECONNRESET. */
+	canRetryOnceWithoutRollback?: boolean;
+	/** Custom metadata to be displayed in the log document */
+	customMetadata?: Record<string, string | number | boolean | undefined>;
 }
 
 export type IChatRequestTelemetryProperties = {
@@ -180,12 +186,15 @@ export type IChatRequestTelemetryProperties = {
 	conversationId?: string;
 	messageSource?: string;
 	associatedRequestId?: string;
-	retryAfterErrorCategory?: string;
 	retryAfterError?: string;
 	retryAfterErrorGitHubRequestId?: string;
 	connectivityTestError?: string;
 	connectivityTestErrorGitHubRequestId?: string;
 	retryAfterFilterCategory?: string;
+	/** A subtype for categorizing the request with a messageSource- eg subagent */
+	subType?: string;
+	/** For a subagent: The request ID of the parent request that invoked this subagent. */
+	parentRequestId?: string;
 }
 
 export interface ICreateEndpointBodyOptions extends IMakeChatRequestOptions {
@@ -208,11 +217,11 @@ export interface IChatEndpoint extends IEndpoint {
 	readonly degradationReason?: string;
 	readonly multiplier?: number;
 	readonly restrictedToSkus?: string[];
-	readonly isDefault: boolean;
 	readonly isFallback: boolean;
 	readonly customModel?: CustomModel;
 	readonly isExtensionContributed?: boolean;
 	readonly policy: 'enabled' | { terms: string };
+	readonly maxPromptImages?: number;
 	/**
 	 * Handles processing of responses from a chat endpoint. Each endpoint can have different response formats.
 	 * @param telemetryService The telemetry service
@@ -231,7 +240,8 @@ export interface IChatEndpoint extends IEndpoint {
 		expectedNumChoices: number,
 		finishCallback: FinishedCallback,
 		telemetryData: TelemetryData,
-		cancellationToken?: CancellationToken
+		cancellationToken?: CancellationToken,
+		location?: ChatLocation,
 	): Promise<AsyncIterableObject<ChatCompletion>>;
 
 	/**
@@ -306,6 +316,8 @@ function networkRequest(
 	additionalHeaders?: Record<string, string>,
 	cancelToken?: CancellationToken,
 	useFetcher?: FetcherId,
+	canRetryOnce: boolean = true,
+	location?: ChatLocation,
 ): Promise<Response> {
 	// TODO @lramos15 Eventually don't even construct this fake endpoint object.
 	const endpoint = typeof endpointOrUrl === 'string' || 'type' in endpointOrUrl ? {
@@ -326,7 +338,7 @@ function networkRequest(
 		'OpenAI-Intent': intent, // Tells CAPI who flighted this request. Helps find buggy features
 		'X-GitHub-Api-Version': '2025-05-01',
 		...additionalHeaders,
-		...(endpoint.getExtraHeaders ? endpoint.getExtraHeaders() : {}),
+		...(endpoint.getExtraHeaders ? endpoint.getExtraHeaders(location) : {}),
 	};
 
 	if (endpoint.interceptBody) {
@@ -357,7 +369,7 @@ function networkRequest(
 	}
 	if (typeof endpoint.urlOrRequestMetadata === 'string') {
 		const requestPromise = fetcher.fetch(endpoint.urlOrRequestMetadata, request).catch(reason => {
-			if (canRetryOnceNetworkError(reason)) {
+			if (canRetryOnce && canRetryOnceNetworkError(reason)) {
 				// disconnect and retry the request once if the connection was reset
 				telemetryService.sendGHTelemetryEvent('networking.disconnectAll');
 				return fetcher.disconnectAll().then(() => {
@@ -400,6 +412,8 @@ export function postRequest(
 	additionalHeaders?: Record<string, string>,
 	cancelToken?: CancellationToken,
 	useFetcher?: FetcherId,
+	canRetryOnce: boolean = true,
+	location?: ChatLocation,
 ): Promise<Response> {
 	return networkRequest(fetcherService,
 		telemetryService,
@@ -413,6 +427,8 @@ export function postRequest(
 		additionalHeaders,
 		cancelToken,
 		useFetcher,
+		canRetryOnce,
+		location,
 	);
 }
 
