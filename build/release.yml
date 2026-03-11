@@ -117,9 +117,6 @@ extends:
       - script: npm run build
         displayName: npm run build
 
-    uploadSourceMaps:
-      enabled: true
-
     # testPlatforms:
     #     - name: Linux
     #       nodeVersions: [16.x]

@@ -27,7 +27,7 @@ import { IChatDelegationSummaryService } from '../../../agents/copilotcli/common
 import { type ICopilotCLIModels, type ICopilotCLISDK } from '../../../agents/copilotcli/node/copilotCli';
 import { CopilotCLIPromptResolver } from '../../../agents/copilotcli/node/copilotcliPromptResolver';
 import { CopilotCLISession } from '../../../agents/copilotcli/node/copilotcliSession';
-import { CopilotCLISessionService, CopilotCLISessionWorkspaceTracker, ICopilotCLISessionService } from '../../../agents/copilotcli/node/copilotcliSessionService';
+import { CopilotCLISessionService, CopilotCLISessionWorkspaceTracker } from '../../../agents/copilotcli/node/copilotcliSessionService';
 import { ICopilotCLIMCPHandler } from '../../../agents/copilotcli/node/mcpHandler';
 import { MockCliSdkSession, MockCliSdkSessionManager, NullCopilotCLIAgents, NullICopilotCLIImageSupport } from '../../../agents/copilotcli/node/test/copilotCliSessionService.spec';
 import { ChatSummarizerProvider } from '../../../prompt/node/summarizer';
@@ -39,7 +39,6 @@ import { IChatSessionWorkspaceFolderService } from '../../common/chatSessionWork
 import { IChatSessionWorktreeService, type ChatSessionWorktreeProperties } from '../../common/chatSessionWorktreeService';
 import { CopilotCLIChatSessionContentProvider, CopilotCLIChatSessionItemProvider, CopilotCLIChatSessionParticipant } from '../copilotCLIChatSessionsContribution';
 import { CopilotCloudSessionsProvider } from '../copilotCloudSessionsProvider';
-import { FolderRepositoryManager } from '../folderRepositoryManagerImpl';
 
 // Mock terminal integration to avoid importing PowerShell asset (.ps1) which Vite cannot parse during tests
 vi.mock('../copilotCLITerminalIntegration', () => {
@@ -61,7 +60,6 @@ vi.mock('../copilotCLITerminalIntegration', () => {
 
 class FakeChatSessionWorkspaceFolderService extends mock<IChatSessionWorkspaceFolderService>() {
 	private _sessionWorkspaceFolders = new Map<string, vscode.Uri>();
-	private _recentFolders: { folder: vscode.Uri; lastAccessTime: number }[] = [];
 	override trackSessionWorkspaceFolder = vi.fn(async (sessionId: string, workspaceFolderUri: string) => {
 		this._sessionWorkspaceFolders.set(sessionId, vscode.Uri.file(workspaceFolderUri));
 	});
@@ -71,15 +69,6 @@ class FakeChatSessionWorkspaceFolderService extends mock<IChatSessionWorkspaceFo
 	override getSessionWorkspaceFolder = vi.fn((sessionId: string) => {
 		return this._sessionWorkspaceFolders.get(sessionId);
 	});
-	override getRecentFolders = vi.fn((): { folder: vscode.Uri; lastAccessTime: number }[] => {
-		return this._recentFolders;
-	});
-	setTestRecentFolders(folders: { folder: vscode.Uri; lastAccessTime: number }[]): void {
-		this._recentFolders = folders;
-	}
-	setTestSessionWorkspaceFolder(sessionId: string, folder: vscode.Uri): void {
-		this._sessionWorkspaceFolders.set(sessionId, folder);
-	}
 }
 
 class FakeChatSessionWorktreeService extends mock<IChatSessionWorktreeService>() {
@@ -108,7 +97,6 @@ class FakeModels implements ICopilotCLIModels {
 class FakeGitService extends mock<IGitService>() {
 	override activeRepository = { get: () => undefined } as unknown as IGitService['activeRepository'];
 	override repositories: RepoContext[] = [];
-	private _recentRepositories: { rootUri: vscode.Uri; lastAccessTime: number }[] = [];
 	setRepo(repos: RepoContext) {
 		this.repositories = [repos];
 	}
@@ -117,12 +105,6 @@ class FakeGitService extends mock<IGitService>() {
 			return Promise.resolve(this.repositories[0]);
 		}
 		return undefined;
-	}
-	override getRecentRepositories = vi.fn((): { rootUri: vscode.Uri; lastAccessTime: number }[] => {
-		return this._recentRepositories;
-	});
-	setTestRecentRepositories(repos: { rootUri: vscode.Uri; lastAccessTime: number }[]): void {
-		this._recentRepositories = repos;
 	}
 }
 
@@ -156,18 +138,6 @@ class TestCopilotCLISession extends CopilotCLISession {
 }
 
 
-class FakeCopilotCLISessionService extends mock<ICopilotCLISessionService>() {
-	private _sessionWorkingDirs = new Map<string, vscode.Uri>();
-
-	override getSessionWorkingDirectory = vi.fn(async (sessionId: string): Promise<vscode.Uri | undefined> => {
-		return this._sessionWorkingDirs.get(sessionId);
-	});
-
-	setTestSessionWorkingDirectory(sessionId: string, uri: vscode.Uri): void {
-		this._sessionWorkingDirs.set(sessionId, uri);
-	}
-}
-
 describe('CopilotCLIChatSessionParticipant.handleRequest', () => {
 	const disposables = new DisposableStore();
 	let promptResolver: CopilotCLIPromptResolver;
@@ -186,8 +156,6 @@ describe('CopilotCLIChatSessionParticipant.handleRequest', () => {
 	let instantiationService: IInstantiationService;
 	let manager: MockCliSdkSessionManager;
 	let mcpHandler: ICopilotCLIMCPHandler;
-	let folderRepositoryManager: FolderRepositoryManager;
-	let cliSessionServiceForFolderManager: FakeCopilotCLISessionService;
 	const cliSessions: TestCopilotCLISession[] = [];
 
 	beforeEach(async () => {
@@ -214,7 +182,6 @@ describe('CopilotCLIChatSessionParticipant.handleRequest', () => {
 		workspaceFolderService = new FakeChatSessionWorkspaceFolderService();
 		git = new FakeGitService();
 		models = new FakeModels();
-		cliSessionServiceForFolderManager = new FakeCopilotCLISessionService();
 		telemetry = new NullTelemetryService();
 		tools = new class FakeToolsService extends mock<IToolsService>() { }();
 		workspaceService = new NullWorkspaceService([URI.file('/workspace')]);
@@ -259,14 +226,6 @@ describe('CopilotCLIChatSessionParticipant.handleRequest', () => {
 				// no-op
 			}
 		}();
-		folderRepositoryManager = new FolderRepositoryManager(
-			worktree,
-			workspaceFolderService,
-			cliSessionServiceForFolderManager as unknown as ICopilotCLISessionService,
-			git,
-			workspaceService,
-			logService
-		);
 		participant = new CopilotCLIChatSessionParticipant(
 			contentProvider,
 			promptResolver,
@@ -285,7 +244,6 @@ describe('CopilotCLIChatSessionParticipant.handleRequest', () => {
 			new PromptsServiceImpl(new NullWorkspaceService()),
 			delegationService,
 			workspaceService,
-			folderRepositoryManager,
 		);
 	});
 
@@ -309,22 +267,18 @@ describe('CopilotCLIChatSessionParticipant.handleRequest', () => {
 	});
 
 	it('uses worktree workingDirectory when isolation is enabled for a new untitled session', async () => {
-		const worktreeProperties: ChatSessionWorktreeProperties = {
+		workspaceFolderService.trackSessionWorkspaceFolder('temp-new', Uri.file(`${sep}repo`).fsPath);
+		git.setRepo(({ rootUri: Uri.file(`${sep}repo`) } as RepoContext));
+		(worktree.createWorktree as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({
 			autoCommit: true,
 			baseCommit: 'deadbeef',
 			branchName: 'test',
 			repositoryPath: `${sep}repo`,
 			worktreePath: `${sep}worktree`
-		};
-		// Set up untitled session folder
-		folderRepositoryManager.setUntitledSessionFolder('untitled:temp-new', Uri.file(`${sep}repo`));
-		// Configure git to return repository for the folder
-		git.setRepo({ rootUri: Uri.file(`${sep}repo`), kind: 'repository' } as unknown as RepoContext);
-		// Configure worktree service to return worktree properties when createWorktree is called
-		(worktree.createWorktree as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(worktreeProperties);
+		} satisfies ChatSessionWorktreeProperties);
 
 		const request = new TestChatRequest('Say hi');
-		const context = createChatContext('untitled:temp-new', true);
+		const context = createChatContext('temp-new', true);
 		const stream = new MockChatResponseStream();
 		const token = disposables.add(new CancellationTokenSource()).token;
 
@@ -340,11 +294,10 @@ describe('CopilotCLIChatSessionParticipant.handleRequest', () => {
 	});
 
 	it('falls back to workspace workingDirectory when isolation is enabled but worktree creation fails', async () => {
-		// Set up untitled session folder (no git repo)
-		folderRepositoryManager.setUntitledSessionFolder('untitled:temp-new', Uri.file(`${sep}workspace`));
-		// Git returns no repository for this folder (default FakeGitService behavior)
+		(worktree.createWorktree as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(undefined);
+		workspaceFolderService.trackSessionWorkspaceFolder('temp-new', Uri.file(`${sep}workspace`).fsPath);
 		const request = new TestChatRequest('Say hi');
-		const context = createChatContext('untitled:temp-new', true);
+		const context = createChatContext('temp-new', true);
 		const stream = new MockChatResponseStream();
 		const token = disposables.add(new CancellationTokenSource()).token;
 
@@ -550,10 +503,9 @@ describe('CopilotCLIChatSessionParticipant.handleRequest', () => {
 	it('shows confirmation prompt for untitled session with uncommitted changes', async () => {
 		git.activeRepository = { get: () => ({ rootUri: Uri.file(`${sep}repo`), changes: { indexChanges: [{ path: 'file.ts' }], workingTree: [] } }) } as unknown as IGitService['activeRepository'];
 		git.setRepo({ rootUri: Uri.file(`${sep}repo`), changes: { indexChanges: [{ path: 'file.ts' }], workingTree: [] } } as unknown as RepoContext);
-		// Set up untitled session folder so getFolderRepository returns repository info
-		folderRepositoryManager.setUntitledSessionFolder('untitled:temp-new', Uri.file(`${sep}repo`));
+		workspaceFolderService.trackSessionWorkspaceFolder('temp-new', git.activeRepository.get()?.rootUri.fsPath || '');
 		const request = new TestChatRequest('Fix the bug');
-		const context = createChatContext('untitled:temp-new', true);
+		const context = createChatContext('temp-new', true);
 		const parts: vscode.ExtendedChatResponsePart[] = [];
 		const stream = new MockChatResponseStream((part) => parts.push(part));
 		const token = disposables.add(new CancellationTokenSource()).token;
@@ -618,59 +570,6 @@ describe('CopilotCLIChatSessionParticipant.handleRequest', () => {
 		expect(itemProvider.swap).toHaveBeenCalled();
 		const swapCall = (itemProvider.swap as unknown as ReturnType<typeof vi.fn>).mock.calls[0];
 		expect(swapCall[1].label).toBe('Implement new feature');
-	});
-
-	it('passes additionalReferences from confirmation metadata to resolvePrompt', async () => {
-		git.activeRepository = { get: () => ({ changes: { indexChanges: [{ path: 'file.ts' }], workingTree: [] } }) } as unknown as IGitService['activeRepository'];
-
-		const testReferences: vscode.ChatPromptReference[] = [
-			{ id: 'vscode.file', name: 'test.ts', value: Uri.file('/workspace/test.ts') },
-			{ id: 'vscode.file', name: 'other.ts', value: Uri.file('/workspace/other.ts') }
-		];
-
-		const request = new TestChatRequest('Copy Changes');
-		const context = createChatContext('temp-new', true);
-		(request as any).acceptedConfirmationData = [{
-			step: 'uncommitted-changes',
-			metadata: {
-				prompt: 'Fix the bug',
-				references: testReferences,
-				chatContext: context
-			}
-		}];
-		const stream = new MockChatResponseStream();
-		const token = disposables.add(new CancellationTokenSource()).token;
-
-		await participant.createHandler()(request, context, stream, token);
-
-		// Should pass additionalReferences to resolvePrompt
-		expect(promptResolver.resolvePrompt).toHaveBeenCalled();
-		const resolvePromptCall = (promptResolver.resolvePrompt as unknown as ReturnType<typeof vi.fn>).mock.calls[0];
-		expect(resolvePromptCall[2]).toEqual(testReferences);
-	});
-
-	it('passes empty array when confirmation metadata has no references', async () => {
-		git.activeRepository = { get: () => ({ changes: { indexChanges: [{ path: 'file.ts' }], workingTree: [] } }) } as unknown as IGitService['activeRepository'];
-
-		const request = new TestChatRequest('Copy Changes');
-		const context = createChatContext('temp-new', true);
-		(request as any).acceptedConfirmationData = [{
-			step: 'uncommitted-changes',
-			metadata: {
-				prompt: 'Fix the bug',
-				// No references field
-				chatContext: context
-			}
-		}];
-		const stream = new MockChatResponseStream();
-		const token = disposables.add(new CancellationTokenSource()).token;
-
-		await participant.createHandler()(request, context, stream, token);
-
-		// Should pass empty array when no references in metadata
-		expect(promptResolver.resolvePrompt).toHaveBeenCalled();
-		const resolvePromptCall = (promptResolver.resolvePrompt as unknown as ReturnType<typeof vi.fn>).mock.calls[0];
-		expect(resolvePromptCall[2]).toEqual([]);
 	});
 
 	it('returns empty when user cancels untitled session confirmation', async () => {
@@ -766,14 +665,13 @@ describe('CopilotCLIChatSessionParticipant.handleRequest', () => {
 	it('reuses untitled session after confirmation without creating new session', async () => {
 		git.activeRepository = { get: () => ({ changes: { indexChanges: [{ path: 'file.ts' }], workingTree: [] } }) } as unknown as IGitService['activeRepository'];
 		git.setRepo({ rootUri: Uri.file(`${sep}workspace`), changes: { indexChanges: [{ path: 'file.ts' }], workingTree: [] } } as unknown as RepoContext);
-		// Set up untitled session folder so getFolderRepository returns repository info (for uncommitted changes check)
-		folderRepositoryManager.setUntitledSessionFolder('untitled:temp-new', Uri.file(`${sep}workspace`));
 		// First request shows confirmation
 		const request1 = new TestChatRequest('First request');
-		const context1 = createChatContext('untitled:temp-new', true);
+		const context1 = createChatContext('temp-new', true);
 		const parts1: vscode.ExtendedChatResponsePart[] = [];
 		const stream1 = new MockChatResponseStream((part) => parts1.push(part));
 		const token1 = disposables.add(new CancellationTokenSource()).token;
+		workspaceFolderService.trackSessionWorkspaceFolder('temp-new', Uri.file(`${sep}workspace`).fsPath);
 
 		await participant.createHandler()(request1, context1, stream1, token1);
 

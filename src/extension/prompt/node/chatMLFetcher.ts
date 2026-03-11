@@ -158,8 +158,7 @@ export class ChatMLFetcherImpl extends AbstractChatMLFetcher {
 			location: opts.location,
 			body: requestBody,
 			ignoreStatefulMarker: opts.ignoreStatefulMarker,
-			isConversationRequest: opts.isConversationRequest,
-			customMetadata: opts.customMetadata
+			isConversationRequest: opts.isConversationRequest
 		});
 		let tokenCount = -1;
 		const streamRecorder = new FetchStreamRecorder(finishedCb);

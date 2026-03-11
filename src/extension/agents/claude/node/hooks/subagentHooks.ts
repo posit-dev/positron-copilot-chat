@@ -12,7 +12,7 @@ import {
 	SubagentStopHookInput
 } from '@anthropic-ai/claude-agent-sdk';
 import { ILogService } from '../../../../../platform/log/common/logService';
-import { registerClaudeHook } from '../../common/claudeHookRegistry';
+import { registerClaudeHook } from './claudeHookRegistry';
 
 /**
  * Logging hook for SubagentStart events.

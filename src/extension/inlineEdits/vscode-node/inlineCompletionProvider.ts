@@ -219,7 +219,7 @@ export class InlineCompletionProviderImpl extends Disposable implements InlineCo
 		// provide any completions.
 		const isCompletionsEnabled = this._isCompletionsEnabled(document);
 		if (!isCompletionsEnabled) {
-			tracer.returns('inline completions disabled for this language');
+			logger.trace('Return: inline completions disabled for this language');
 			return undefined;
 		}
 		// --- End Positron ---

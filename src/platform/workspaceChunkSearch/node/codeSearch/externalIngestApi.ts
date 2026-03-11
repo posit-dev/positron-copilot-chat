@@ -12,7 +12,7 @@ import { ILogService } from '../../../log/common/logService';
 // Sliding window that holds at least N entries and all entries in the time window.
 // This allows the sliding window to always hold some entries if inserts are infrequent,
 // but if inserts are frequent enough then time window behavior takes over.
-class SlidingTimeAndNWindow implements IDisposable {
+class SlidingTimeAndNWindow {
 	private values: number[] = [];
 	private times: number[] = [];
 	private sumValues = 0;
@@ -24,12 +24,6 @@ class SlidingTimeAndNWindow implements IDisposable {
 		this.numEntries = numEntries;
 		this.windowDurationMs = windowDurationMs;
 		this.startPeriodicCleanup();
-	}
-
-	dispose(): void {
-		if (typeof this.cleanupInterval !== 'undefined') {
-			clearInterval(this.cleanupInterval);
-		}
 	}
 
 	increment(n: number): void {
@@ -94,6 +88,12 @@ class SlidingTimeAndNWindow implements IDisposable {
 			}
 		}, 100);
 	}
+
+	destroy(): void {
+		if (this.cleanupInterval) {
+			clearInterval(this.cleanupInterval);
+		}
+	}
 }
 
 class Throttler {
@@ -113,8 +113,8 @@ class Throttler {
 	reset(): void {
 		if (this.numOutstandingRequests === 0) {
 			this.lastSendTime = Date.now();
-			this.totalQuotaUsedWindow.dispose();
-			this.sendPeriodWindow.dispose();
+			this.totalQuotaUsedWindow.destroy();
+			this.sendPeriodWindow.destroy();
 			this.totalQuotaUsedWindow = new SlidingTimeAndNWindow(5, 2000);
 			this.sendPeriodWindow = new SlidingTimeAndNWindow(5, 2000);
 		}
@@ -183,9 +183,9 @@ class Throttler {
 		return shouldSend;
 	}
 
-	dispose(): void {
-		this.totalQuotaUsedWindow.dispose();
-		this.sendPeriodWindow.dispose();
+	destroy(): void {
+		this.totalQuotaUsedWindow.destroy();
+		this.sendPeriodWindow.destroy();
 	}
 }
 
@@ -258,7 +258,7 @@ export class ApiClient implements IDisposable {
 	}
 
 	dispose(): void {
-		this.throttler?.dispose();
+		this.throttler?.destroy();
 	}
 }
 

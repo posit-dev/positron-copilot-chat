@@ -190,7 +190,7 @@ export async function isFileExternalAndNeedsConfirmation(accessor: ServicesAcces
 	if (workspaceService.getWorkspaceFolder(normalizedUri)) {
 		return false;
 	}
-	if (uri.scheme === Schemas.untitled || uri.scheme === 'vscode-chat-response-resource') {
+	if (uri.scheme === Schemas.untitled) {
 		return false;
 	}
 	if (await customInstructionsService.isExternalInstructionsFile(normalizedUri)) {

@@ -9,7 +9,6 @@ import { createSha256Hash } from '../../../../../../util/common/crypto';
 import { generateUuid } from '../../../../../../util/vs/base/common/uuid';
 import { IInstantiationService, ServicesAccessor } from '../../../../../../util/vs/platform/instantiation/common/instantiation';
 import { LlmNESTelemetryBuilder } from '../../../../../inlineEdits/node/nextEditProviderTelemetry';
-import { isInlineSuggestionFromTextAfterCursor } from '../../../../../xtab/common/inlineSuggestion';
 import { GhostTextLogContext } from '../../../../common/ghostTextContext';
 import { initializeTokenizers } from '../../../prompt/src/tokenization';
 import { CancellationTokenSource, CancellationToken as ICancellationToken } from '../../../types/src';
@@ -124,6 +123,8 @@ function isCompletionRequestCancelled(
 
 export class GhostTextComputer {
 
+	private readonly logger: ILogger;
+
 	constructor(
 		@IInstantiationService public readonly instantiationService: IInstantiationService,
 		@ITelemetryService public readonly telemetryService: ITelemetryService,
@@ -137,6 +138,7 @@ export class GhostTextComputer {
 		@ICompletionsStatusReporter public readonly statusReporter: ICompletionsStatusReporter,
 		@ILogService public readonly logService: ILogService,
 	) {
+		this.logger = logService.createSubLogger(['ghostText', 'GhostTextComputer']);
 	}
 
 	public async getGhostText(
@@ -148,7 +150,7 @@ export class GhostTextComputer {
 		parentLogger: ILogger,
 	): Promise<GhostTextResultWithTelemetry<[CompletionResult[], ResultType]>> {
 		const id = generateUuid();
-		const logger = parentLogger.createSubLogger(['GhostTextComputer#getGhostText']);
+		const logger = parentLogger.createSubLogger(['GhostTextComputer', 'getGhostText']);
 		this.currentGhostText.currentRequestId = id;
 		const telemetryData = await this.instantiationService.invokeFunction(createTelemetryWithExp, completionState.textDocument, id, options);
 		// A CLS consumer has an LSP bug where it erroneously makes method requests before `initialize` has returned, which
@@ -224,7 +226,7 @@ export class GhostTextComputer {
 		telemetryBuilder: LlmNESTelemetryBuilder,
 		parentLogger: ILogger,
 	): Promise<GhostTextResultWithTelemetry<[CompletionResult[], ResultType]>> {
-		const logger = parentLogger.createSubLogger(['GhostTextComputer#getGhostTextWithoutAbortHandling']);
+		const logger = parentLogger.createSubLogger(['GhostTextComputer', 'getGhostText']);
 		let start = preIssuedTelemetryDataWithExp.issuedTime; // Start before getting exp assignments
 		const performanceMetrics: [string, number][] = [];
 		/** Internal helper to record performance measurements. Mutates performanceMetrics and start. */
@@ -422,7 +424,7 @@ export class GhostTextComputer {
 					logger.trace('No matching async completion found within timeout');
 				}
 				if (isCompletionRequestCancelled(this.currentGhostText, ourRequestId, cancellationToken)) {
-					logger.debug('Cancelled before requesting a new completion');
+					this.logger.debug('Cancelled before requesting a new completion');
 					return {
 						type: 'abortedBeforeIssued',
 						reason: 'Cancelled after waiting for async completion',
@@ -446,7 +448,7 @@ export class GhostTextComputer {
 							completionState.position,
 							c,
 							isMoreMultiline,
-							logger,
+							this.logger,
 						)
 					)
 					.filter(c => c !== undefined);
@@ -564,7 +566,7 @@ export class GhostTextComputer {
 						completionState.position,
 						c,
 						isMoreMultiline,
-						logger
+						this.logger
 					)
 				)
 				.filter(c => c !== undefined);
@@ -579,10 +581,10 @@ export class GhostTextComputer {
 			const elapsed = now() - preIssuedTelemetryDataWithExp.issuedTime;
 			const remainingDelay = Math.max(completionsDelay - elapsed, 0);
 			if (resultType !== ResultType.TypingAsSuggested && !ghostTextOptions.isCycling && remainingDelay > 0) {
-				logger.debug(`Waiting ${remainingDelay}ms before returning completion`);
+				this.logger.debug(`Waiting ${remainingDelay}ms before returning completion`);
 				await delay(remainingDelay);
 				if (isCompletionRequestCancelled(this.currentGhostText, ourRequestId, cancellationToken)) {
-					logger.debug('Cancelled after completions delay');
+					this.logger.debug('Cancelled after completions delay');
 					return {
 						type: 'canceled',
 						reason: 'after completions delay',
@@ -626,7 +628,7 @@ export class GhostTextComputer {
 			telemetryData.properties.clientCompletionId = results[0]?.clientCompletionId;
 			// If reading from the cache or async, capture the look back offset used
 			telemetryData.measurements.foundOffset = results?.[0]?.telemetry?.measurements?.foundOffset ?? -1;
-			logger.debug(`Produced ${results.length} results from ${resultTypeToString(resultType)} at ${telemetryData.measurements.foundOffset} offset`);
+			this.logger.debug(`Produced ${results.length} results from ${resultTypeToString(resultType)} at ${telemetryData.measurements.foundOffset} offset`);
 
 			if (isCompletionRequestCancelled(this.currentGhostText, ourRequestId, cancellationToken)) {
 				return {
@@ -703,9 +705,34 @@ function getLocalInlineSuggestion(
 
 /** Checks if the position is valid inline suggestion position. Returns `undefined` if it's position where ghost text shouldn't be displayed */
 function isInlineSuggestion(document: TextDocumentContents, position: IPosition) {
-	const line = document.lineAt(position);
-	const textAfterCursor = line.text.substring(position.character);
-	return isInlineSuggestionFromTextAfterCursor(textAfterCursor);
+	//Checks if we're in the position for the middle of the line suggestion
+	const isMiddleOfLine = isMiddleOfTheLine(position, document);
+	const isValidMiddleOfLine = isValidMiddleOfTheLinePosition(position, document);
+
+	if (isMiddleOfLine && !isValidMiddleOfLine) {
+		return;
+	}
+
+	const isInlineSuggestion = isMiddleOfLine && isValidMiddleOfLine;
+	return isInlineSuggestion;
+}
+
+/** Checks if position is NOT at the end of the line */
+function isMiddleOfTheLine(selectionPosition: IPosition, doc: TextDocumentContents): boolean {
+	// must be end of line or trailing whitespace
+	const line = doc.lineAt(selectionPosition);
+	if (line.text.substr(selectionPosition.character).trim().length !== 0) {
+		return true;
+	}
+
+	return false;
+}
+
+/** Checks if position is valid for the middle of the line suggestion */
+function isValidMiddleOfTheLinePosition(selectionPosition: IPosition, doc: TextDocumentContents): boolean {
+	const line = doc.lineAt(selectionPosition);
+	const endOfLine = line.text.substr(selectionPosition.character).trim();
+	return /^\s*[)>}\]"'`]*\s*[:{;,]?\s*$/.test(endOfLine);
 }
 
 // This enables tests to control multi line behavior
@@ -765,7 +792,7 @@ function getCompletionsFromCache(
 	suffix: string,
 	multiline: boolean
 ): APIChoice[] | undefined {
-	const logger = accessor.get(ILogService).createSubLogger(['getCompletionsFromCache']);
+	const logger = accessor.get(ILogService).createSubLogger(['ghostText', 'getCompletionsFromCache']);
 	const choices = accessor.get(ICompletionsCacheService).findAll(prefix, suffix);
 	if (choices.length === 0) {
 		logger.debug('Found no completions in cache');
