@@ -91,7 +91,6 @@
 	"l10n": "./l10n",
 	"enabledApiProposals": [
 		"agentSessionsWorkspace",
-		"chatHooks@1",
 		"extensionsAny",
 		"newSymbolNamesProvider",
 		"interactive",
@@ -115,7 +114,7 @@
 		"mappedEditsProvider",
 		"aiRelatedInformation",
 		"aiSettingsSearch",
-		"chatParticipantAdditions@1",
+		"chatParticipantAdditions",
 		"defaultChatParticipant@4",
 		"contribSourceControlInputBoxMenu",
 		"authLearnMore",
