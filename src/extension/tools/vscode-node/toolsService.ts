@@ -9,6 +9,7 @@ import { IChatEndpoint } from '../../../platform/networking/common/networking';
 import { equals as arraysEqual } from '../../../util/vs/base/common/arrays';
 import { Lazy } from '../../../util/vs/base/common/lazy';
 import { isDisposable } from '../../../util/vs/base/common/lifecycle';
+import { Iterable } from '../../../util/vs/base/common/iterator';
 import { autorunIterableDelta } from '../../../util/vs/base/common/observableInternal';
 import { IInstantiationService } from '../../../util/vs/platform/instantiation/common/instantiation';
 import { getContributedToolName, getToolName, mapContributedToolNamesInSchema, mapContributedToolNamesInString, ToolName } from '../common/toolNames';
