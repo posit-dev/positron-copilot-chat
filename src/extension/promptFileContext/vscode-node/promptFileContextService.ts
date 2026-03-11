@@ -181,14 +181,13 @@ export class PromptFileContextContribution extends Disposable {
 						value: `vscode, github-copilot`,
 					},
 					{
-						name: '`handoffs` is optional and is a sequence of mappings with `label`, `agent`, `prompt`, `send`, and `model` properties. The `model` property uses the format `Model Name (vendor)` (e.g., `GPT-4.1 (copilot)`)',
+						name: '`handoffs` is optional and is a sequence of mappings with `label`, `agent`, `prompt` and `send` properties',
 						value: [
 							`handoffs:`,
 							`  - label: Start Implementation`,
 							`    agent: agent`,
 							`    prompt: Implement the plan`,
 							`    send: true`,
-							`    model: GPT-4.1 (copilot)`,
 						].join('\n'),
 					},
 					{
@@ -205,7 +204,6 @@ export class PromptFileContextContribution extends Disposable {
 							`    agent: agent`,
 							`    prompt: Implement the plan`,
 							`    send: true`,
-							`    model: GPT-4.1 (copilot)`,
 							`---`,
 							`First come up with a plan for the new feature. Write a todo list of tasks to complete the feature.`,
 							'```',
@@ -226,12 +224,6 @@ export class PromptFileContextContribution extends Disposable {
 	private async getCopilotApi(): Promise<Copilot.ContextProviderApiV1 | undefined> {
 		const copilotExtension = vscode.extensions.getExtension('GitHub.copilot');
 		if (copilotExtension === undefined) {
-			// --- Start Positron ---
-			// Disable this error. The Copilot Chat extension is not open source
-			// and it is expected that it isn't available in Positron.
-			//
-			// this.logService.error('Copilot extension not found');
-			// --- End Positron ---
 			return undefined;
 		}
 		this.logService.info('Copilot extension found');

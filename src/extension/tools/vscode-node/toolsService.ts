@@ -7,6 +7,7 @@ import * as vscode from 'vscode';
 import { ILogService } from '../../../platform/log/common/logService';
 import { IChatEndpoint } from '../../../platform/networking/common/networking';
 import { equals as arraysEqual } from '../../../util/vs/base/common/arrays';
+import { Iterable } from '../../../util/vs/base/common/iterator';
 import { Lazy } from '../../../util/vs/base/common/lazy';
 import { isDisposable } from '../../../util/vs/base/common/lifecycle';
 import { autorunIterableDelta } from '../../../util/vs/base/common/observableInternal';
@@ -149,9 +150,6 @@ export class ToolsService extends BaseToolsService {
 		// todo@connor4312: string check here is for back-compat for 1.109 Insiders
 		const requestToolsByName = new Map(Iterable.map(request.tools, ([t, enabled]) => [typeof t === 'string' ? t : t.name, enabled]));
 
-		const modelSpecificOverrides = new Map(this.getToolOverridesForEndpoint(endpoint, tools));
-		const modelSpecificTools = this.getModelSpecificTools();
-
 		// --- Start Positron ---
 		// Compute the set of tools considered to be enabled by Positron. This
 		// filters out tools that are not relevant to the current Positron
@@ -168,6 +166,9 @@ export class ToolsService extends BaseToolsService {
 			enabledTools = positronEnabledTools;
 		}
 		// --- End Positron ---
+
+		const modelSpecificOverrides = new Map(this.getToolOverridesForEndpoint(endpoint, tools));
+		const modelSpecificTools = this.getModelSpecificTools();
 
 		return tools
 			.filter(tool => {

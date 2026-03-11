@@ -176,8 +176,6 @@ export interface IMakeChatRequestOptions {
 	disableThinking?: boolean;
 	/** Enable retrying once on simple network errors like ECONNRESET. */
 	canRetryOnceWithoutRollback?: boolean;
-	/** Custom metadata to be displayed in the log document */
-	customMetadata?: Record<string, string | number | boolean | undefined>;
 }
 
 export type IChatRequestTelemetryProperties = {
@@ -193,8 +191,6 @@ export type IChatRequestTelemetryProperties = {
 	retryAfterFilterCategory?: string;
 	/** A subtype for categorizing the request with a messageSource- eg subagent */
 	subType?: string;
-	/** For a subagent: The request ID of the parent request that invoked this subagent. */
-	parentRequestId?: string;
 }
 
 export interface ICreateEndpointBodyOptions extends IMakeChatRequestOptions {
@@ -217,6 +213,7 @@ export interface IChatEndpoint extends IEndpoint {
 	readonly degradationReason?: string;
 	readonly multiplier?: number;
 	readonly restrictedToSkus?: string[];
+	readonly isDefault: boolean;
 	readonly isFallback: boolean;
 	readonly customModel?: CustomModel;
 	readonly isExtensionContributed?: boolean;

@@ -500,6 +500,10 @@ class ClaudeStreamingPassThroughEndpoint implements IChatEndpoint {
 		return this.base.restrictedToSkus;
 	}
 
+	public get isDefault(): boolean {
+		return this.base.isDefault;
+	}
+
 	public get isFallback(): boolean {
 		return this.base.isFallback;
 	}

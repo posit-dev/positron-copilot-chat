@@ -177,22 +177,44 @@ export class GeminiNativeBYOKLMProvider extends AbstractLanguageModelChatProvide
 			// Send success telemetry matching response.success format
 			/* __GDPR__
 				"response.success" : {
-					"owner": "lramos15",
-					"comment": "Report quality details for a successful BYOK Gemini response.",
+					"owner": "digitarald",
+					"comment": "Report quality details for a successful service response.",
+					"reason": { "classification": "SystemMetaData", "purpose": "PerformanceAndHealth", "comment": "Reason for why a response finished" },
+					"filterReason": { "classification": "SystemMetaData", "purpose": "PerformanceAndHealth", "comment": "Reason for why a response was filtered" },
 					"source": { "classification": "SystemMetaData", "purpose": "PerformanceAndHealth", "comment": "Source of the initial request" },
+					"initiatorType": { "classification": "SystemMetaData", "purpose": "FeatureInsight", "comment": "Whether the request was initiated by a user or an agent" },
 					"model": { "classification": "SystemMetaData", "purpose": "PerformanceAndHealth", "comment": "Model selection for the response" },
+					"modelInvoked": { "classification": "SystemMetaData", "purpose": "PerformanceAndHealth", "comment": "Actual model invoked for the response" },
+					"apiType": { "classification": "SystemMetaData", "purpose": "PerformanceAndHealth", "comment": "API type for the response- chat completions or responses" },
 					"requestId": { "classification": "SystemMetaData", "purpose": "PerformanceAndHealth", "comment": "Id of the current turn request" },
+					"gitHubRequestId": { "classification": "SystemMetaData", "purpose": "PerformanceAndHealth", "comment": "GitHub request id if available" },
+					"associatedRequestId": { "classification": "SystemMetaData", "purpose": "FeatureInsight", "comment": "Another request ID that this request is associated with (eg, the originating request of a summarization request)." },
+					"reasoningEffort": { "classification": "SystemMetaData", "purpose": "PerformanceAndHealth", "comment": "Reasoning effort level" },
+					"reasoningSummary": { "classification": "SystemMetaData", "purpose": "PerformanceAndHealth", "comment": "Reasoning summary level" },
+					"fetcher": { "classification": "SystemMetaData", "purpose": "PerformanceAndHealth", "comment": "The fetcher used for the request" },
 					"totalTokenMax": { "classification": "SystemMetaData", "purpose": "PerformanceAndHealth", "comment": "Maximum total token window", "isMeasurement": true },
-					"tokenCountMax": { "classification": "SystemMetaData", "purpose": "PerformanceAndHealth", "comment": "Maximum generated tokens", "isMeasurement": true },
+					"clientPromptTokenCount": { "classification": "SystemMetaData", "purpose": "PerformanceAndHealth", "comment": "Number of prompt tokens, locally counted", "isMeasurement": true },
 					"promptTokenCount": { "classification": "SystemMetaData", "purpose": "PerformanceAndHealth", "comment": "Number of prompt tokens, server side counted", "isMeasurement": true },
 					"promptCacheTokenCount": { "classification": "SystemMetaData", "purpose": "PerformanceAndHealth", "comment": "Number of prompt tokens hitting cache as reported by server", "isMeasurement": true },
+					"tokenCountMax": { "classification": "SystemMetaData", "purpose": "PerformanceAndHealth", "comment": "Maximum generated tokens", "isMeasurement": true },
 					"tokenCount": { "classification": "SystemMetaData", "purpose": "PerformanceAndHealth", "comment": "Number of generated tokens", "isMeasurement": true },
+					"reasoningTokens": { "classification": "SystemMetaData", "purpose": "PerformanceAndHealth", "comment": "Number of reasoning tokens", "isMeasurement": true },
+					"acceptedPredictionTokens": { "classification": "SystemMetaData", "purpose": "FeatureInsight", "comment": "Number of tokens in the prediction that appeared in the completion", "isMeasurement": true },
+					"rejectedPredictionTokens": { "classification": "SystemMetaData", "purpose": "FeatureInsight", "comment": "Number of tokens in the prediction that appeared in the completion", "isMeasurement": true },
 					"completionTokens": { "classification": "SystemMetaData", "purpose": "FeatureInsight", "comment": "Number of tokens in the output", "isMeasurement": true },
 					"timeToFirstToken": { "classification": "SystemMetaData", "purpose": "PerformanceAndHealth", "comment": "Time to first token", "isMeasurement": true },
 					"timeToFirstTokenEmitted": { "classification": "SystemMetaData", "purpose": "PerformanceAndHealth", "comment": "Time to first token emitted (visible text)", "isMeasurement": true },
 					"timeToComplete": { "classification": "SystemMetaData", "purpose": "PerformanceAndHealth", "comment": "Time to complete the request", "isMeasurement": true },
 					"issuedTime": { "classification": "SystemMetaData", "purpose": "PerformanceAndHealth", "comment": "Timestamp when the request was issued", "isMeasurement": true },
-					"isBYOK": { "classification": "SystemMetaData", "purpose": "FeatureInsight", "comment": "Whether the request was for a BYOK model", "isMeasurement": true }
+					"isVisionRequest": { "classification": "SystemMetaData", "purpose": "PerformanceAndHealth", "comment": "Whether the request was for a vision model", "isMeasurement": true },
+					"isBYOK": { "classification": "SystemMetaData", "purpose": "FeatureInsight", "comment": "Whether the request was for a BYOK model", "isMeasurement": true },
+					"isAuto": { "classification": "SystemMetaData", "purpose": "FeatureInsight", "comment": "Whether the request was for an Auto model", "isMeasurement": true },
+					"bytesReceived": { "classification": "SystemMetaData", "purpose": "PerformanceAndHealth", "comment": "Number of bytes received in the response", "isMeasurement": true },
+					"retryAfterError": { "classification": "SystemMetaData", "purpose": "FeatureInsight", "comment": "Error of the original request." },
+					"retryAfterErrorGitHubRequestId": { "classification": "SystemMetaData", "purpose": "PerformanceAndHealth", "comment": "GitHub request id of the original request if available" },
+					"connectivityTestError": { "classification": "SystemMetaData", "purpose": "FeatureInsight", "comment": "Error of the connectivity test." },
+					"connectivityTestErrorGitHubRequestId": { "classification": "SystemMetaData", "purpose": "PerformanceAndHealth", "comment": "GitHub request id of the connectivity test request if available" },
+					"retryAfterFilterCategory": { "classification": "SystemMetaData", "purpose": "FeatureInsight", "comment": "If the response was filtered and this is a retry attempt, this contains the original filtered content category." }
 				}
 			*/
 			this._telemetryService.sendTelemetryEvent('response.success', { github: true, microsoft: true }, {
@@ -244,11 +266,11 @@ export class GeminiNativeBYOKLMProvider extends AbstractLanguageModelChatProvide
 		const start = Date.now();
 		let ttft: number | undefined;
 		let ttfte: number | undefined;
-		let usage: APIUsage | undefined;
 
 		try {
 			const stream = await client.models.generateContentStream(params);
 
+			let usage: APIUsage | undefined;
 			let pendingThinkingSignature: string | undefined;
 
 			for await (const chunk of stream) {
@@ -276,9 +298,6 @@ export class GeminiNativeBYOKLMProvider extends AbstractLanguageModelChatProvide
 							// Now handle the actual content parts
 							if ('thought' in part && part.thought === true && part.text) {
 								// Handle thinking/reasoning content from Gemini API
-								if (ttfte === undefined) {
-									ttfte = Date.now() - issuedTime;
-								}
 								progress.report(new LanguageModelThinkingPart(part.text));
 							} else if (part.text) {
 								if (ttfte === undefined) {
@@ -294,9 +313,6 @@ export class GeminiNativeBYOKLMProvider extends AbstractLanguageModelChatProvide
 									pendingThinkingSignature = undefined;
 								}
 
-								if (ttfte === undefined) {
-									ttfte = Date.now() - issuedTime;
-								}
 								progress.report(new LanguageModelToolCallPart(
 									generateUuid(),
 									part.functionCall.name,
@@ -308,45 +324,20 @@ export class GeminiNativeBYOKLMProvider extends AbstractLanguageModelChatProvide
 				}
 
 				// Extract usage information if available in the chunk
-				// Initialize on first chunk with usageMetadata, then update incrementally
-				// This ensures we capture prompt token info even if stream is cancelled mid-way
 				if (chunk.usageMetadata) {
-					const promptTokens = chunk.usageMetadata.promptTokenCount;
-					// For thinking models (e.g., gemini-3-pro-high), candidatesTokenCount only includes
-					// regular output tokens. thoughtsTokenCount contains the thinking/reasoning tokens.
-					// We include both in the completion token count.
-					const candidateTokens = chunk.usageMetadata.candidatesTokenCount ?? 0;
-					const thoughtTokens = chunk.usageMetadata.thoughtsTokenCount ?? 0;
-					const completionTokens = candidateTokens + thoughtTokens > 0 ? candidateTokens + thoughtTokens : undefined;
-					const cachedTokens = chunk.usageMetadata.cachedContentTokenCount;
+					const promptTokens = chunk.usageMetadata.promptTokenCount || -1;
+					const completionTokens = chunk.usageMetadata.candidatesTokenCount || -1;
 
-					if (!usage) {
-						// Initialize usage on first chunk - use -1 as sentinel for unavailable values
-						usage = {
-							completion_tokens: completionTokens ?? -1,
-							prompt_tokens: promptTokens ?? -1,
-							total_tokens: chunk.usageMetadata.totalTokenCount ?? -1,
-							prompt_tokens_details: {
-								cached_tokens: cachedTokens ?? 0,
-							}
-						};
-					} else {
-						// Update with latest values, preserving existing non-sentinel values
-						if (promptTokens !== undefined) {
-							usage.prompt_tokens = promptTokens;
+					usage = {
+						// Use -1 as a sentinel value to indicate that the token count is unavailable
+						completion_tokens: completionTokens,
+						prompt_tokens: promptTokens,
+						total_tokens: chunk.usageMetadata.totalTokenCount ||
+							(promptTokens !== -1 && completionTokens !== -1 ? promptTokens + completionTokens : -1),
+						prompt_tokens_details: {
+							cached_tokens: chunk.usageMetadata.cachedContentTokenCount || 0,
 						}
-						if (completionTokens !== undefined) {
-							usage.completion_tokens = completionTokens;
-						}
-						if (chunk.usageMetadata.totalTokenCount !== undefined) {
-							usage.total_tokens = chunk.usageMetadata.totalTokenCount;
-						} else if (usage.prompt_tokens !== -1 && usage.completion_tokens !== -1) {
-							usage.total_tokens = usage.prompt_tokens + usage.completion_tokens;
-						}
-						if (cachedTokens !== undefined) {
-							usage.prompt_tokens_details!.cached_tokens = cachedTokens;
-						}
-					}
+					};
 				}
 			}
 
@@ -354,8 +345,7 @@ export class GeminiNativeBYOKLMProvider extends AbstractLanguageModelChatProvide
 		} catch (error) {
 			if ((error as any)?.name === 'AbortError' || token.isCancellationRequested) {
 				this._logService.trace('Gemini streaming aborted');
-				// Return partial usage data collected before cancellation
-				return { ttft, ttfte, usage };
+				return { ttft, ttfte, usage: undefined };
 			}
 			this._logService.error(`Gemini streaming error: ${toErrorMessage(error, true)}`);
 			throw error;

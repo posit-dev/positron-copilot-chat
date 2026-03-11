@@ -28,7 +28,7 @@ import { createFormattedToolInvocation } from '../common/toolInvocationFormatter
 import { IClaudeCodeSdkService } from './claudeCodeSdkService';
 import { ClaudeLanguageModelServer, IClaudeLanguageModelServerConfig } from './claudeLanguageModelServer';
 import { ClaudeSettingsChangeTracker } from './claudeSettingsChangeTracker';
-import { buildHooksFromRegistry } from '../common/claudeHookRegistry';
+import { buildHooksFromRegistry } from './hooks/index';
 
 // Manages Claude Code agent interactions and language model server lifecycle
 export class ClaudeAgentManager extends Disposable {
@@ -172,7 +172,7 @@ export class ClaudeCodeSession extends Disposable {
 	private _currentRequest: CurrentRequest | undefined;
 	private _pendingPrompt: DeferredPromise<QueuedRequest> | undefined;
 	private _abortController = new AbortController();
-	private _editTracker: ExternalEditTracker;
+	private _editTracker = new ExternalEditTracker();
 	private _settingsChangeTracker: ClaudeSettingsChangeTracker;
 	private _currentModelId: string;
 	private _currentPermissionMode: PermissionMode;
@@ -218,9 +218,6 @@ export class ClaudeCodeSession extends Disposable {
 		super();
 		this._currentModelId = initialModelId;
 		this._currentPermissionMode = initialPermissionMode ?? 'acceptEdits';
-		// Initialize edit tracker with plan directory as ignored
-		const planDirUri = URI.joinPath(this.envService.userHome, '.claude', 'plans');
-		this._editTracker = new ExternalEditTracker([planDirUri]);
 		this._settingsChangeTracker = this._createSettingsChangeTracker();
 	}
 

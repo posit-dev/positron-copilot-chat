@@ -7,8 +7,6 @@ import type * as vscode from 'vscode';
 import { DeferredPromise } from '../../../util/vs/base/common/async';
 import { CancellationToken } from '../../../util/vs/base/common/cancellation';
 import { IDisposable } from '../../../util/vs/base/common/lifecycle';
-import { isEqualOrParent } from '../../../util/vs/base/common/resources';
-import { URI } from '../../../util/vs/base/common/uri';
 
 /**
  * Tracks ongoing external edit operations for agent tools.
@@ -17,14 +15,6 @@ import { URI } from '../../../util/vs/base/common/uri';
  */
 export class ExternalEditTracker {
 	private _ongoingEdits = new Map<string, { complete: () => void; onDidComplete: Thenable<string> }>();
-
-	/**
-	 * Creates a new ExternalEditTracker.
-	 * @param ignoreDirectories Optional list of directory URIs to ignore when tracking edits
-	 */
-	constructor(
-		private readonly ignoreDirectories: URI[] = []
-	) { }
 
 	/**
 	 * Starts tracking an external edit operation.
@@ -41,13 +31,7 @@ export class ExternalEditTracker {
 		stream: vscode.ChatResponseStream,
 		token?: CancellationToken
 	): Promise<void> {
-		// Filter out URIs that are within ignored directories
-		const filteredUris = uris.filter(uri => {
-			const uriAsURI = URI.isUri(uri) ? uri : URI.from(uri);
-			return !this.ignoreDirectories.some(ignoreDir => isEqualOrParent(uriAsURI, ignoreDir));
-		});
-
-		if (!filteredUris.length || token?.isCancellationRequested) {
+		if (!uris.length || token?.isCancellationRequested) {
 			return;
 		}
 
@@ -63,7 +47,7 @@ export class ExternalEditTracker {
 				});
 			}
 
-			const onDidComplete = stream.externalEdit(filteredUris, async () => {
+			const onDidComplete = stream.externalEdit(uris, async () => {
 				proceedWithEdit();
 				await deferred.p;
 				cancelListen?.dispose();

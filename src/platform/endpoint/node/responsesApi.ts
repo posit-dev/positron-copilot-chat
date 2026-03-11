@@ -18,11 +18,13 @@ import { ConfigKey, IConfigurationService } from '../../configuration/common/con
 import { ILogService } from '../../log/common/logService';
 import { FinishedCallback, IResponseDelta, OpenAiResponsesFunctionTool } from '../../networking/common/fetch';
 import { IChatEndpoint, ICreateEndpointBodyOptions, IEndpointBody } from '../../networking/common/networking';
-import { ChatCompletion, FinishedCompletionReason, TokenLogProb } from '../../networking/common/openai';
+import { ChatCompletion, FinishedCompletionReason, TokenLogProb, rawMessageToCAPI } from '../../networking/common/openai';
+import { sendEngineMessagesTelemetry } from '../../networking/node/chatStream';
 import { IExperimentationService } from '../../telemetry/common/nullExperimentationService';
 import { ITelemetryService } from '../../telemetry/common/telemetry';
 import { TelemetryData } from '../../telemetry/common/telemetryData';
 import { getVerbosityForModelSync } from '../common/chatModelCapabilities';
+import { rawPartAsPhaseData } from '../common/phaseDataContainer';
 import { getStatefulMarkerAndIndex } from '../common/statefulMarkerContainer';
 import { rawPartAsThinkingData } from '../common/thinkingDataContainer';
 
@@ -57,8 +59,9 @@ export function createResponsesRequestBody(accessor: ServicesAccessor, options: 
 		'disabled';
 	const effortConfig = configService.getExperimentBasedConfig(ConfigKey.ResponsesApiReasoningEffort, expService);
 	const summaryConfig = configService.getExperimentBasedConfig(ConfigKey.ResponsesApiReasoningSummary, expService);
+	const shouldDisableReasoningSummary = endpoint.family === 'gpt-5.3-codex-spark-preview';
 	const effort = effortConfig === 'default' ? 'medium' : effortConfig;
-	const summary = summaryConfig === 'off' ? undefined : summaryConfig;
+	const summary = summaryConfig === 'off' || shouldDisableReasoningSummary ? undefined : summaryConfig;
 	if (effort || summary) {
 		body.reasoning = {
 			...(effort ? { effort } : {}),
@@ -69,6 +72,14 @@ export function createResponsesRequestBody(accessor: ServicesAccessor, options: 
 	body.include = ['reasoning.encrypted_content'];
 
 	return body;
+}
+
+type ResponseOutputMessageWithPhase = OpenAI.Responses.ResponseOutputMessage & {
+	phase?: string;
+};
+
+interface ResponseOutputItemWithPhase {
+	phase?: string;
 }
 
 function rawMessagesToResponseAPI(modelId: string, messages: readonly Raw.ChatMessage[], ignoreStatefulMarker: boolean): { input: OpenAI.Responses.ResponseInputItem[]; previous_response_id?: string } {
@@ -87,14 +98,16 @@ function rawMessagesToResponseAPI(modelId: string, messages: readonly Raw.ChatMe
 					input.push(...extractThinkingData(message.content));
 					const asstContent = message.content.map(rawContentToResponsesOutputContent).filter(isDefined);
 					if (asstContent.length) {
-						input.push({
+						const assistantMessage: ResponseOutputMessageWithPhase = {
 							role: 'assistant',
 							content: asstContent,
 							// I don't think this needs to be round-tripped.
 							id: 'msg_123',
 							status: 'completed',
 							type: 'message',
-						} satisfies OpenAI.Responses.ResponseOutputMessage);
+							phase: extractPhaseData(message.content),
+						};
+						input.push(assistantMessage);
 					}
 				}
 				if (message.toolCalls) {
@@ -174,6 +187,18 @@ function extractThinkingData(content: Raw.ChatCompletionContentPart[]): OpenAI.R
 			}
 		}
 	}));
+}
+
+function extractPhaseData(content: Raw.ChatCompletionContentPart[]): string | undefined {
+	for (const part of content) {
+		if (part.type === Raw.ChatCompletionContentPartKind.Opaque) {
+			const phase = rawPartAsPhaseData(part);
+			if (phase) {
+				return phase;
+			}
+		}
+	}
+	return undefined;
 }
 
 /**
@@ -354,6 +379,17 @@ export async function processResponseFromChatEndpoint(instantiationService: IIns
 				logService.trace(`SSE: ${ev.data}`);
 				const completion = processor.push({ type: ev.type, ...JSON.parse(ev.data) }, finishCallback);
 				if (completion) {
+					const telemetryMessage = rawMessageToCAPI(completion.message);
+					let telemetryDataWithUsage = telemetryData;
+					if (completion.usage) {
+						telemetryDataWithUsage = telemetryData.extendedBy({}, {
+							promptTokens: completion.usage.prompt_tokens,
+							completionTokens: completion.usage.completion_tokens,
+							totalTokens: completion.usage.total_tokens,
+						});
+					}
+
+					sendEngineMessagesTelemetry(telemetryService, [telemetryMessage], telemetryDataWithUsage, true, logService);
 					feed.emitOne(completion);
 				}
 			} catch (e) {
@@ -441,6 +477,7 @@ export class OpenAIResponsesProcessor {
 							name: chunk.item.name,
 							arguments: chunk.item.arguments,
 						}],
+						phase: (chunk.item as ResponseOutputItemWithPhase).phase
 					});
 				} else if (chunk.item.type === 'reasoning') {
 					onProgress({
@@ -453,6 +490,11 @@ export class OpenAIResponsesProcessor {
 								chunk.item.summary.map(s => s.text),
 							encrypted: chunk.item.encrypted_content,
 						} : undefined
+					});
+				} else if (chunk.item.type === 'message') {
+					onProgress({
+						text: '',
+						phase: (chunk.item as ResponseOutputItemWithPhase).phase
 					});
 				}
 				return;
