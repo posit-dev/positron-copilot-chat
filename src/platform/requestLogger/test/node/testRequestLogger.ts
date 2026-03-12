@@ -171,7 +171,6 @@ class TestLoggedRequestInfo implements ILoggedRequestInfo {
 
 class TestLoggedToolCall {
 	public readonly kind = LoggedInfoKind.ToolCall;
-	public readonly toolMetadata: unknown;
 
 	constructor(
 		public readonly id: string,
@@ -181,10 +180,7 @@ class TestLoggedToolCall {
 		public readonly token: CapturingToken | undefined,
 		public readonly time: number,
 		public readonly thinking?: ThinkingData,
-	) {
-		// Extract toolMetadata from response if it exists
-		this.toolMetadata = 'toolMetadata' in response ? (response as { toolMetadata?: unknown }).toolMetadata : undefined;
-	}
+	) { }
 
 	async toJSON(): Promise<object> {
 		return {

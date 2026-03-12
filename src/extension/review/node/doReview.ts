@@ -81,7 +81,7 @@ export class ReviewSession {
 	}
 }
 
-export function combineCancellationTokens(token1: CancellationToken, token2: CancellationToken): CancellationToken {
+function combineCancellationTokens(token1: CancellationToken, token2: CancellationToken): CancellationToken {
 	const combinedSource = new CancellationTokenSource();
 
 	const subscription1 = token1.onCancellationRequested(() => {

@@ -48,10 +48,6 @@ export class MockChatResponseStream extends ChatResponseStreamImpl {
 	override markdown(content: string | MarkdownString): void {
 		this.output.push(typeof content === 'string' ? content : content.value);
 	}
-	override warning(content: string | MarkdownString): void {
-		super.warning(content);
-		this.output.push(typeof content === 'string' ? content : content.value);
-	}
 	override codeblockUri(uri: URI): void {
 		this.uris.push(uri.toString());
 	}

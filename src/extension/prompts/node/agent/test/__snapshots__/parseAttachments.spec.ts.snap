@@ -9,7 +9,7 @@ IMPORTANT: this context may or may not be relevant to your tasks. You should not
 <attachment id="file:folder" folderPath="/workspace/folder" />
 </attachments>
 <userRequest>
-list files in #file:folder
+list files in #file:folder (See <attachments> above for file contents. You may not need to search or read the file again.)
 </userRequest>
 "
 `;
@@ -66,7 +66,7 @@ Msg2
 
 </attachments>
 <userRequest>
-Fix these errors
+Fix these errors (See <attachments> above for file contents. You may not need to search or read the file again.)
 </userRequest>
 "
 `;
@@ -295,7 +295,7 @@ IMPORTANT: this context may or may not be relevant to your tasks. You should not
 <attachment id="sample.py" filePath="/workspace/sample.py" />
 </attachments>
 <userRequest>
-explain contents of #file:file.ts and other files
+explain contents of #file:file.ts and other files (See <attachments> above for file contents. You may not need to search or read the file again.)
 </userRequest>
 "
 `;
@@ -364,7 +364,7 @@ MsgD
 
 </attachments>
 <userRequest>
-Fix these errors
+Fix these errors (See <attachments> above for file contents. You may not need to search or read the file again.)
 </userRequest>
 "
 `;
@@ -491,7 +491,7 @@ This is a prompt file
 
 </attachments>
 <userRequest>
-Process these files
+Process these files (See <attachments> above for file contents. You may not need to search or read the file again.)
 </userRequest>
 "
 `;
@@ -537,7 +537,7 @@ function example() {
 
 </attachments>
 <userRequest>
-Process these files
+Process these files (See <attachments> above for file contents. You may not need to search or read the file again.)
 </userRequest>
 "
 `;
@@ -573,7 +573,7 @@ This is a prompt file
 <attachment id="regular.ts" filePath="/workspace/regular.ts" />
 </attachments>
 <userRequest>
-Process these files
+Process these files (See <attachments> above for file contents. You may not need to search or read the file again.)
 </userRequest>
 "
 `;
@@ -650,63 +650,12 @@ def subtract
 
 </attachments>
 <userRequest>
-base
+base (See <attachments> above for file contents. You may not need to search or read the file again.)
 </userRequest>
 "
 `;
 
-exports[`CopilotCLI Generate & parse prompts > emptyWorkspace > parses locations including files with spaces 2`] = `
-[
-  {
-    "displayName": "file:file.ts",
-    "filePath": "/workspace/file.ts",
-    "selection": {
-      "end": {
-        "character": 16,
-        "line": 5,
-      },
-      "start": {
-        "character": 1,
-        "line": 5,
-      },
-    },
-    "text": "			function sub",
-    "type": "selection",
-  },
-  {
-    "displayName": "file:sample.ts",
-    "filePath": "/workspace/hello world/sample.ts",
-    "selection": {
-      "end": {
-        "character": 16,
-        "line": 5,
-      },
-      "start": {
-        "character": 1,
-        "line": 5,
-      },
-    },
-    "text": "",
-    "type": "selection",
-  },
-  {
-    "displayName": "file:sample.py",
-    "filePath": "/workspace/sample.py",
-    "selection": {
-      "end": {
-        "character": 16,
-        "line": 4,
-      },
-      "start": {
-        "character": 1,
-        "line": 4,
-      },
-    },
-    "text": "			def subtract",
-    "type": "selection",
-  },
-]
-`;
+exports[`CopilotCLI Generate & parse prompts > emptyWorkspace > parses locations including files with spaces 2`] = `[]`;
 
 exports[`CopilotCLI Generate & parse prompts > emptyWorkspace > parses locations including files with spaces 3`] = `
 [
@@ -791,7 +740,7 @@ Unterminated string
 
 </attachments>
 <userRequest>
-Fix this error
+Fix this error (See <attachments> above for file contents. You may not need to search or read the file again.)
 </userRequest>
 "
 `;
@@ -868,33 +817,12 @@ def add(a, b):
 
 </attachments>
 <userRequest>
-explain #sym:add
+explain #sym:add (See <attachments> above for file contents. You may not need to search or read the file again.)
 </userRequest>
 "
 `;
 
-exports[`CopilotCLI Generate & parse prompts > emptyWorkspace > uses attachment id attribute for name/id 2`] = `
-[
-  {
-    "displayName": "sym:add",
-    "filePath": "/workspace/add.py",
-    "selection": {
-      "end": {
-        "character": 16,
-        "line": 4,
-      },
-      "start": {
-        "character": 1,
-        "line": 2,
-      },
-    },
-    "text": "			def add(a, b):
-				return a + b
-			}",
-    "type": "selection",
-  },
-]
-`;
+exports[`CopilotCLI Generate & parse prompts > emptyWorkspace > uses attachment id attribute for name/id 2`] = `[]`;
 
 exports[`CopilotCLI Generate & parse prompts > emptyWorkspace > uses attachment id attribute for name/id 3`] = `
 [
@@ -935,7 +863,7 @@ IMPORTANT: this context may or may not be relevant to your tasks. You should not
 <attachment id="file:folder" folderPath="/workspace/folder" />
 </attachments>
 <userRequest>
-list files in #file:folder
+list files in #file:folder (See <attachments> above for file contents. You may not need to search or read the file again.)
 </userRequest>
 "
 `;
@@ -992,7 +920,7 @@ Msg2
 
 </attachments>
 <userRequest>
-Fix these errors
+Fix these errors (See <attachments> above for file contents. You may not need to search or read the file again.)
 </userRequest>
 "
 `;
@@ -1221,7 +1149,7 @@ IMPORTANT: this context may or may not be relevant to your tasks. You should not
 <attachment id="sample.py" filePath="/workspace/sample.py" />
 </attachments>
 <userRequest>
-explain contents of #file:file.ts and other files
+explain contents of #file:file.ts and other files (See <attachments> above for file contents. You may not need to search or read the file again.)
 </userRequest>
 "
 `;
@@ -1290,7 +1218,7 @@ MsgD
 
 </attachments>
 <userRequest>
-Fix these errors
+Fix these errors (See <attachments> above for file contents. You may not need to search or read the file again.)
 </userRequest>
 "
 `;
@@ -1417,7 +1345,7 @@ This is a prompt file
 
 </attachments>
 <userRequest>
-Process these files
+Process these files (See <attachments> above for file contents. You may not need to search or read the file again.)
 </userRequest>
 "
 `;
@@ -1463,7 +1391,7 @@ function example() {
 
 </attachments>
 <userRequest>
-Process these files
+Process these files (See <attachments> above for file contents. You may not need to search or read the file again.)
 </userRequest>
 "
 `;
@@ -1499,7 +1427,7 @@ This is a prompt file
 <attachment id="regular.ts" filePath="/workspace/regular.ts" />
 </attachments>
 <userRequest>
-Process these files
+Process these files (See <attachments> above for file contents. You may not need to search or read the file again.)
 </userRequest>
 "
 `;
@@ -1576,63 +1504,12 @@ def subtract
 
 </attachments>
 <userRequest>
-base
+base (See <attachments> above for file contents. You may not need to search or read the file again.)
 </userRequest>
 "
 `;
 
-exports[`CopilotCLI Generate & parse prompts > workspace > parses locations including files with spaces 2`] = `
-[
-  {
-    "displayName": "file:file.ts",
-    "filePath": "/workspace/file.ts",
-    "selection": {
-      "end": {
-        "character": 16,
-        "line": 5,
-      },
-      "start": {
-        "character": 1,
-        "line": 5,
-      },
-    },
-    "text": "			function sub",
-    "type": "selection",
-  },
-  {
-    "displayName": "file:sample.ts",
-    "filePath": "/workspace/hello world/sample.ts",
-    "selection": {
-      "end": {
-        "character": 16,
-        "line": 5,
-      },
-      "start": {
-        "character": 1,
-        "line": 5,
-      },
-    },
-    "text": "",
-    "type": "selection",
-  },
-  {
-    "displayName": "file:sample.py",
-    "filePath": "/workspace/sample.py",
-    "selection": {
-      "end": {
-        "character": 16,
-        "line": 4,
-      },
-      "start": {
-        "character": 1,
-        "line": 4,
-      },
-    },
-    "text": "			def subtract",
-    "type": "selection",
-  },
-]
-`;
+exports[`CopilotCLI Generate & parse prompts > workspace > parses locations including files with spaces 2`] = `[]`;
 
 exports[`CopilotCLI Generate & parse prompts > workspace > parses locations including files with spaces 3`] = `
 [
@@ -1717,7 +1594,7 @@ Unterminated string
 
 </attachments>
 <userRequest>
-Fix this error
+Fix this error (See <attachments> above for file contents. You may not need to search or read the file again.)
 </userRequest>
 "
 `;
@@ -1794,33 +1671,12 @@ def add(a, b):
 
 </attachments>
 <userRequest>
-explain #sym:add
+explain #sym:add (See <attachments> above for file contents. You may not need to search or read the file again.)
 </userRequest>
 "
 `;
 
-exports[`CopilotCLI Generate & parse prompts > workspace > uses attachment id attribute for name/id 2`] = `
-[
-  {
-    "displayName": "sym:add",
-    "filePath": "/workspace/add.py",
-    "selection": {
-      "end": {
-        "character": 16,
-        "line": 4,
-      },
-      "start": {
-        "character": 1,
-        "line": 2,
-      },
-    },
-    "text": "			def add(a, b):
-				return a + b
-			}",
-    "type": "selection",
-  },
-]
-`;
+exports[`CopilotCLI Generate & parse prompts > workspace > uses attachment id attribute for name/id 2`] = `[]`;
 
 exports[`CopilotCLI Generate & parse prompts > workspace > uses attachment id attribute for name/id 3`] = `
 [
@@ -1861,7 +1717,7 @@ IMPORTANT: this context may or may not be relevant to your tasks. You should not
 <attachment id="file:folder" folderPath="/worktree/folder" />
 </attachments>
 <userRequest>
-list files in #file:folder
+list files in #file:folder (See <attachments> above for file contents. You may not need to search or read the file again.)
 </userRequest>
 "
 `;
@@ -1918,7 +1774,7 @@ Msg2
 
 </attachments>
 <userRequest>
-Fix these errors
+Fix these errors (See <attachments> above for file contents. You may not need to search or read the file again.)
 </userRequest>
 "
 `;
@@ -2147,7 +2003,7 @@ IMPORTANT: this context may or may not be relevant to your tasks. You should not
 <attachment id="sample.py" filePath="/worktree/sample.py" />
 </attachments>
 <userRequest>
-explain contents of #file:file.ts and other files
+explain contents of #file:file.ts and other files (See <attachments> above for file contents. You may not need to search or read the file again.)
 </userRequest>
 "
 `;
@@ -2216,7 +2072,7 @@ MsgD
 
 </attachments>
 <userRequest>
-Fix these errors
+Fix these errors (See <attachments> above for file contents. You may not need to search or read the file again.)
 </userRequest>
 "
 `;
@@ -2343,7 +2199,7 @@ This is a prompt file
 
 </attachments>
 <userRequest>
-Process these files
+Process these files (See <attachments> above for file contents. You may not need to search or read the file again.)
 </userRequest>
 "
 `;
@@ -2389,7 +2245,7 @@ function example() {
 
 </attachments>
 <userRequest>
-Process these files
+Process these files (See <attachments> above for file contents. You may not need to search or read the file again.)
 </userRequest>
 "
 `;
@@ -2425,7 +2281,7 @@ This is a prompt file
 <attachment id="regular.ts" filePath="/worktree/regular.ts" />
 </attachments>
 <userRequest>
-Process these files
+Process these files (See <attachments> above for file contents. You may not need to search or read the file again.)
 </userRequest>
 "
 `;
@@ -2481,7 +2337,7 @@ IMPORTANT: this context may or may not be relevant to your tasks. You should not
 
 </attachments>
 <userRequest>
-base
+base (See <attachments> above for file contents. You may not need to search or read the file again.)
 </userRequest>
 "
 `;
@@ -2502,7 +2358,7 @@ Unterminated string
 
 </attachments>
 <userRequest>
-Fix this error
+Fix this error (See <attachments> above for file contents. You may not need to search or read the file again.)
 </userRequest>
 "
 `;
@@ -2570,7 +2426,7 @@ IMPORTANT: this context may or may not be relevant to your tasks. You should not
 
 </attachments>
 <userRequest>
-explain #sym:add
+explain #sym:add (See <attachments> above for file contents. You may not need to search or read the file again.)
 </userRequest>
 "
 `;

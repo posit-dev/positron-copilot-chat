@@ -245,6 +245,7 @@ class ConversationHistory extends PromptElement<SummarizedAgentHistoryProps> {
 		if (!this.props.promptContext.isContinuation) {
 			history.push(<AgentUserMessage flexGrow={2} priority={900} {...getUserMessagePropsFromAgentProps(this.props, {
 				userQueryTagName: this.props.userQueryTagName,
+				attachmentHint: this.props.attachmentHint,
 				ReminderInstructionsClass: this.props.ReminderInstructionsClass,
 				ToolReferencesHintClass: this.props.ToolReferencesHintClass,
 			})} />);
@@ -296,6 +297,7 @@ class ConversationHistory extends PromptElement<SummarizedAgentHistoryProps> {
 			} else if (!turn.isContinuation) {
 				turnComponents.push(<AgentUserMessage flexGrow={1} {...getUserMessagePropsFromTurn(turn, this.props.endpoint, {
 					userQueryTagName: this.props.userQueryTagName,
+					attachmentHint: this.props.attachmentHint,
 					ReminderInstructionsClass: this.props.ReminderInstructionsClass,
 					ToolReferencesHintClass: this.props.ToolReferencesHintClass,
 				})} />);

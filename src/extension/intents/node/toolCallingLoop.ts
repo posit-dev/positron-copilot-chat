@@ -444,6 +444,7 @@ export abstract class ToolCallingLoop<TOptions extends IToolCallingLoopOptions =
 		const toolCalls: IToolCall[] = [];
 		let thinkingItem: ThinkingDataItem | undefined;
 		const disableThinking = isContinuation && isAnthropicFamily(endpoint) && !ToolCallingLoop.messagesContainThinking(buildPromptResult.messages);
+		let phase: string | undefined;
 		const fetchResult = await this.fetch({
 			messages: this.applyMessagePostProcessing(buildPromptResult.messages),
 			finishedCb: async (text, index, delta) => {
@@ -469,6 +470,9 @@ export abstract class ToolCallingLoop<TOptions extends IToolCallingLoopOptions =
 				if (delta.thinking) {
 					thinkingItem = ThinkingDataItem.createOrUpdate(thinkingItem, delta.thinking);
 				}
+				if (delta.phase) {
+					phase = delta.phase;
+				}
 				return stopEarly ? text.length : undefined;
 			},
 			requestOptions: {
@@ -491,16 +495,17 @@ export abstract class ToolCallingLoop<TOptions extends IToolCallingLoopOptions =
 			tools: availableTools,
 		});
 		fetchStreamSource?.resolve();
-		const chatResult = await processResponsePromise ?? undefined;
+		let chatResult = await processResponsePromise ?? undefined;
 
-		// Report token usage to the stream for rendering the context window widget
-		const stream = streamParticipants[streamParticipants.length - 1];
-		if (fetchResult.type === ChatFetchResponseType.Success && fetchResult.usage && stream) {
-			stream.usage({
-				completionTokens: fetchResult.usage.completion_tokens,
-				promptTokens: fetchResult.usage.prompt_tokens,
-				promptTokenDetails,
-			});
+		// hydrate the token usage into the chat result as this renders the context window widget
+		if (fetchResult.type === ChatFetchResponseType.Success && fetchResult.usage) {
+			chatResult = {
+				...chatResult, usage: {
+					completionTokens: fetchResult.usage.completion_tokens,
+					promptTokens: fetchResult.usage.prompt_tokens,
+					promptTokenDetails,
+				}
+			};
 		}
 
 		// Validate authentication session upgrade and handle accordingly
@@ -536,7 +541,9 @@ export abstract class ToolCallingLoop<TOptions extends IToolCallingLoopOptions =
 					toolCalls,
 					toolInputRetry,
 					statefulMarker,
-					thinking: thinkingItem
+					thinking: thinkingItem,
+					phase,
+					phaseModelId: phase ? endpoint.model : undefined,
 				}),
 				chatResult,
 				hadIgnoredFiles: buildPromptResult.hasIgnoredFiles,
