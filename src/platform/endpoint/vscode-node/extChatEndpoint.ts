@@ -19,10 +19,11 @@ import { FinishedCallback, OpenAiFunctionTool, OptionalChatRequestParams } from 
 import { Response } from '../../networking/common/fetcherService';
 import { IChatEndpoint, ICreateEndpointBodyOptions, IEndpointBody, IMakeChatRequestOptions } from '../../networking/common/networking';
 import { ChatCompletion } from '../../networking/common/openai';
-import { IRequestLogger } from '../../requestLogger/node/requestLogger';
+import { IOTelService } from '../../otel/common/otelService';
+import { retrieveCapturingTokenByCorrelation, storeCapturingTokenForCorrelation } from '../../requestLogger/node/requestLogger';
 import { ITelemetryService } from '../../telemetry/common/telemetry';
 import { TelemetryData } from '../../telemetry/common/telemetryData';
-import { EndpointEditToolName, IEndpointProvider, isEndpointEditToolName } from '../common/endpointProvider';
+import { EndpointEditToolName, isEndpointEditToolName } from '../common/endpointProvider';
 import { CustomDataPartMimeTypes } from '../common/endpointTypes';
 import { decodeStatefulMarker, encodeStatefulMarker, rawPartAsStatefulMarker } from '../common/statefulMarkerContainer';
 import { rawPartAsThinkingData } from '../common/thinkingDataContainer';
@@ -48,12 +49,15 @@ export class ExtensionContributedChatEndpoint implements IChatEndpoint {
 	constructor(
 		private readonly languageModel: vscode.LanguageModelChat,
 		@IInstantiationService private readonly _instantiationService: IInstantiationService,
-		@IRequestLogger private readonly _requestLogger: IRequestLogger,
-		@IEndpointProvider private readonly _endpointProvider: IEndpointProvider
+		@IOTelService private readonly _otelService: IOTelService,
 	) {
 		// Initialize with the model's max tokens
 		this._maxTokens = languageModel.maxInputTokens;
 		this.supportedEditTools = languageModel.capabilities.editToolsHint?.filter(isEndpointEditToolName);
+	}
+
+	get modelProvider(): string {
+		return this.languageModel.vendor;
 	}
 
 	get modelMaxPromptTokens(): number {
@@ -167,31 +171,34 @@ export class ExtensionContributedChatEndpoint implements IChatEndpoint {
 		const vscodeMessages = convertToApiChatMessage(messages);
 		const ourRequestId = generateUuid();
 
-		const allEndpoints = await this._endpointProvider.getAllChatEndpoints();
-		const currentEndpoint = allEndpoints.find(endpoint => endpoint.model === this.model && endpoint.family === this.family);
-		const isExternalModel = !currentEndpoint;
+		// Capture active OTel trace context to propagate through IPC to the BYOK provider.
+		// Each provider creates its own chat span with full usage data:
+		// - OpenAI-compatible (Azure, OpenAI, etc.): via CopilotLanguageModelWrapper → chatMLFetcher
+		// - Anthropic: inside AnthropicLMProvider
+		// - Gemini: inside GeminiNativeBYOKLMProvider
+		const activeTraceCtx = this._otelService.getActiveTraceContext();
 
 		const vscodeOptions: vscode.LanguageModelChatRequestOptions = {
 			tools: ((requestOptions?.tools ?? []) as OpenAiFunctionTool[]).map(tool => ({
 				name: tool.function.name,
 				description: tool.function.description,
 				inputSchema: tool.function.parameters,
-			}))
+			})),
+			// Pass correlation ID and OTel trace context through modelOptions for cross-IPC restoration.
+			modelOptions: {
+				_capturingTokenCorrelationId: ourRequestId,
+				_otelTraceContext: activeTraceCtx ?? null,
+			}
 		};
 
-		const streamRecorder = new FetchStreamRecorder(finishedCb);
+		// Store current CapturingToken for retrieval by BYOK providers after IPC crossing
+		//
+		// Note: We intentionally don't create an OTel chat span here for extension-contributed models.
+		// The BYOK provider (CopilotLanguageModelWrapper) creates the real chat span via chatMLFetcher
+		// with full token usage, response model, and cache data. Creating a span here would duplicate it.
+		storeCapturingTokenForCorrelation(ourRequestId);
 
-		const pendingLoggedChatRequest = isExternalModel ? this._requestLogger.logChatRequest(debugName + '-external', this, {
-			messages,
-			model: this.model,
-			ourRequestId,
-			location,
-			body: {
-				...requestOptions
-			},
-			ignoreStatefulMarker: true
-		})
-			: undefined;
+		const streamRecorder = new FetchStreamRecorder(finishedCb);
 
 		try {
 			const response = await this.languageModel.sendRequest(vscodeMessages, vscodeOptions, token);
@@ -203,12 +210,10 @@ export class ExtensionContributedChatEndpoint implements IChatEndpoint {
 			for await (const chunk of response.stream) {
 				if (chunk instanceof vscode.LanguageModelTextPart) {
 					text += chunk.value;
-					// Call finishedCb with the current chunk of text
 					if (streamRecorder.callback) {
 						await streamRecorder.callback(text, 0, { text: chunk.value });
 					}
 				} else if (chunk instanceof vscode.LanguageModelToolCallPart) {
-					// Call finishedCb with updated tool calls
 					if (streamRecorder.callback) {
 						const functionCalls = [chunk].map(tool => ({
 							name: tool.name ?? '',
@@ -227,10 +232,9 @@ export class ExtensionContributedChatEndpoint implements IChatEndpoint {
 						await streamRecorder.callback?.(text, 0, { text: '', contextManagement });
 					}
 				} else if (chunk instanceof vscode.LanguageModelThinkingPart) {
-					// Call finishedCb with the current chunk of thinking text with a specific thinking field
 					if (streamRecorder.callback) {
 						await streamRecorder.callback(text, 0, {
-							text: '',  // Use empty text to avoid creating markdown part
+							text: '',
 							thinking: {
 								text: chunk.value,
 								id: chunk.id || '',
@@ -242,7 +246,7 @@ export class ExtensionContributedChatEndpoint implements IChatEndpoint {
 			}
 
 			if (text || numToolsCalled > 0) {
-				const response: ChatResponse = {
+				return {
 					type: ChatFetchResponseType.Success,
 					requestId,
 					serverRequestId: requestId,
@@ -250,27 +254,23 @@ export class ExtensionContributedChatEndpoint implements IChatEndpoint {
 					value: text,
 					resolvedModel: this.languageModel.id
 				};
-				pendingLoggedChatRequest?.resolve({ ...response, value: [response.value] }, streamRecorder.deltas);
-				return response;
 			} else {
-				const result: ChatResponse = {
+				return {
 					type: ChatFetchResponseType.Unknown,
 					reason: 'No response from language model',
 					requestId: requestId,
 					serverRequestId: undefined
 				};
-				pendingLoggedChatRequest?.resolve(result);
-				return result;
 			}
 		} catch (e) {
-			const result: ChatResponse = {
+			return {
 				type: ChatFetchResponseType.Failed,
 				reason: toErrorMessage(e, true),
 				requestId: generateUuid(),
 				serverRequestId: undefined
 			};
-			pendingLoggedChatRequest?.resolve(result);
-			return result;
+		} finally {
+			retrieveCapturingTokenByCorrelation(ourRequestId);
 		}
 	}
 

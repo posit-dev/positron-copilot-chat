@@ -4,25 +4,16 @@
  *--------------------------------------------------------------------------------------------*/
 
 import * as vscode from 'vscode';
-import { IVSCodeExtensionContext } from '../../../platform/extContext/common/extensionContext';
+import { IGitService } from '../../../platform/git/common/gitService';
 import { ILogService } from '../../../platform/log/common/logService';
+import { coalesce } from '../../../util/vs/base/common/arrays';
+import { SequencerByKey } from '../../../util/vs/base/common/async';
 import { Disposable } from '../../../util/vs/base/common/lifecycle';
+import { ResourceMap, ResourceSet } from '../../../util/vs/base/common/map';
+import { isEqual } from '../../../util/vs/base/common/resources';
+import { IChatSessionMetadataStore, WorkspaceFolderEntry } from '../common/chatSessionMetadataStore';
 import { IChatSessionWorkspaceFolderService } from '../common/chatSessionWorkspaceFolderService';
-import { isUntitledSessionId } from '../common/utils';
-
-const CHAT_SESSION_WORKSPACE_FOLDER_MEMENTO_KEY = 'github.copilot.cli.sessionWorkspaceFolders';
-
-// Maximum age of entries in milliseconds (30 days)
-const MAX_ENTRY_AGE_MS = 30 * 24 * 60 * 60 * 1000;
-
-// Maximum number of entries to keep
-const MAX_ENTRIES = 1_500;
-const ENTRIES_TO_PRUNE = 500;
-
-interface WorkspaceFolderEntry {
-	readonly folderPath: string;
-	readonly timestamp: number;
-}
+import { ChatSessionWorktreeFile } from '../common/chatSessionWorktreeService';
 
 /**
  * Service for tracking workspace folder selections for chat sessions.
@@ -31,129 +22,107 @@ interface WorkspaceFolderEntry {
 export class ChatSessionWorkspaceFolderService extends Disposable implements IChatSessionWorkspaceFolderService {
 	declare _serviceBrand: undefined;
 
-	private _sessionWorkspaceFolders = new Map<string, WorkspaceFolderEntry>();
+	private readonly workspaceFolderChanges = new ResourceMap<ChatSessionWorktreeFile[]>();
+	private readonly workspaceState = new Map<string, WorkspaceFolderEntry>();
+	private recentFolders: { folder: vscode.Uri; lastAccessTime: number }[] = [];
+	private readonly deletedFolders = new ResourceSet();
+	private readonly workspaceChangesSequencer = new SequencerByKey<string>();
 
 	constructor(
+		@IGitService private readonly gitService: IGitService,
 		@ILogService private readonly logService: ILogService,
-		@IVSCodeExtensionContext private readonly extensionContext: IVSCodeExtensionContext
+		@IChatSessionMetadataStore private readonly metadataStore: IChatSessionMetadataStore,
 	) {
 		super();
-		this.loadWorkspaceFolders();
 	}
 
-	private loadWorkspaceFolders(): void {
-		const data = this.extensionContext.globalState.get<Record<string, WorkspaceFolderEntry>>(CHAT_SESSION_WORKSPACE_FOLDER_MEMENTO_KEY, {});
-		const now = Date.now();
-		let needsCleanup = false;
-
-		for (const [sessionId, entry] of Object.entries(data)) {
-			if (isUntitledSessionId(sessionId)) {
-				continue; // Skip untitled sessions that may have been saved.
-			}
-			// Check if entry is too old
-			if (now - entry.timestamp > MAX_ENTRY_AGE_MS) {
-				needsCleanup = true;
-				continue; // Skip old entries
-			}
-			this._sessionWorkspaceFolders.set(sessionId, entry);
-		}
-
-		this.logService.trace(`[ChatSessionWorkspaceFolderService] Loaded ${this._sessionWorkspaceFolders.size} workspace folder mappings`);
-
-		// Cleanup old entries
-		if (needsCleanup) {
-			void this.cleanupOldEntries();
-		}
+	public async deleteRecentFolder(folder: vscode.Uri): Promise<void> {
+		this.recentFolders = this.recentFolders.filter(entry => !isEqual(entry.folder, folder));
+		this.deletedFolders.add(folder);
 	}
-
-	private async cleanupOldEntries(): Promise<void> {
-		const newData: Record<string, WorkspaceFolderEntry> = {};
-		const entries = Array.from(this._sessionWorkspaceFolders.entries())
-			.map(([sessionId, entry]) => ({ sessionId, entry }));
-
-		// Sort by timestamp (newest first) and keep only MAX_ENTRIES - ENTRIES_TO_PRUNE
-		entries.sort((a, b) => b.entry.timestamp - a.entry.timestamp);
-		const entriesToKeep = entries.slice(0, MAX_ENTRIES - ENTRIES_TO_PRUNE);
-
-		// Update in-memory map if we had to trim
-		if (entries.length > MAX_ENTRIES - ENTRIES_TO_PRUNE) {
-			this._sessionWorkspaceFolders.clear();
-			for (const { sessionId, entry } of entriesToKeep) {
-				this._sessionWorkspaceFolders.set(sessionId, entry);
+	public async getRecentFolders(): Promise<{ folder: vscode.Uri; lastAccessTime: number }[]> {
+		const items = await this.metadataStore.getUsedWorkspaceFolders();
+		this.recentFolders = coalesce(items.map(item => {
+			if (!item.folderPath) {
+				return;
 			}
-		}
-
-		// Build new data object
-		for (const { sessionId, entry } of entriesToKeep) {
-			newData[sessionId] = entry;
-		}
-
-		await this.extensionContext.globalState.update(CHAT_SESSION_WORKSPACE_FOLDER_MEMENTO_KEY, newData);
-		this.logService.trace(`[ChatSessionWorkspaceFolderService] Cleaned up old entries, kept ${entriesToKeep.length}`);
-	}
-
-	public getRecentFolders(): { folder: vscode.Uri; lastAccessTime: number }[] {
-		const data = this.extensionContext.globalState.get<Record<string, WorkspaceFolderEntry>>(CHAT_SESSION_WORKSPACE_FOLDER_MEMENTO_KEY, {});
-		const recentFolders: { folder: vscode.Uri; lastAccessTime: number }[] = [];
-		for (const entry of Object.values(data)) {
-			if (typeof entry === 'string') {
-				continue;
+			const folder = vscode.Uri.file(item.folderPath);
+			if (this.deletedFolders.has(folder)) {
+				return;
 			}
-			if (isUntitledSessionId(entry.folderPath)) {
-				continue; // Skip untitled sessions that may have been saved.
-			}
-			recentFolders.push({ folder: vscode.Uri.file(entry.folderPath), lastAccessTime: entry.timestamp });
-		}
-		recentFolders.sort((a, b) => b.lastAccessTime - a.lastAccessTime);
-		return recentFolders;
+			return {
+				folder,
+				lastAccessTime: item.timestamp
+			};
+		})).sort((a, b) => b.lastAccessTime - a.lastAccessTime);
+		return this.recentFolders;
 	}
 	async deleteTrackedWorkspaceFolder(sessionId: string): Promise<void> {
-		this._sessionWorkspaceFolders.delete(sessionId);
-		const data = this.extensionContext.globalState.get<Record<string, WorkspaceFolderEntry>>(CHAT_SESSION_WORKSPACE_FOLDER_MEMENTO_KEY, {});
-		delete data[sessionId];
-		await this.extensionContext.globalState.update(CHAT_SESSION_WORKSPACE_FOLDER_MEMENTO_KEY, data);
+		this.workspaceState.delete(sessionId);
+		await this.metadataStore.deleteSessionMetadata(sessionId);
 	}
 
 	async trackSessionWorkspaceFolder(sessionId: string, workspaceFolderUri: string): Promise<void> {
-		const data = this.extensionContext.globalState.get<Record<string, WorkspaceFolderEntry>>(CHAT_SESSION_WORKSPACE_FOLDER_MEMENTO_KEY, {});
-
 		const entry: WorkspaceFolderEntry = {
 			folderPath: workspaceFolderUri,
 			timestamp: Date.now()
 		};
-		this._sessionWorkspaceFolders.set(sessionId, entry);
-		data[sessionId] = entry;
-
-		await this.extensionContext.globalState.update(CHAT_SESSION_WORKSPACE_FOLDER_MEMENTO_KEY, data);
-
+		this.workspaceState.set(sessionId, entry);
+		this.metadataStore.storeWorkspaceFolderInfo(sessionId, entry);
 		this.logService.trace(`[ChatSessionWorkspaceFolderService] Tracked workspace folder ${workspaceFolderUri} for session ${sessionId}`);
-
-		// Check if we need to cleanup
-		if (Object.keys(data).length > MAX_ENTRIES) {
-			void this.cleanupOldEntries();
-		}
 	}
 
-	getSessionWorkspaceFolder(sessionId: string): vscode.Uri | undefined {
-		const entry = this._sessionWorkspaceFolders.get(sessionId);
-		if (!entry) {
-			return undefined;
+	async getSessionWorkspaceFolder(sessionId: string): Promise<vscode.Uri | undefined> {
+		const entry = this.workspaceState.get(sessionId);
+		if (entry?.folderPath) {
+			return vscode.Uri.file(entry.folderPath);
 		}
-
-		// Update timestamp on access
-		const updatedEntry: WorkspaceFolderEntry = {
-			folderPath: entry.folderPath,
-			timestamp: Date.now()
-		};
-		this._sessionWorkspaceFolders.set(sessionId, updatedEntry);
-		void this.updateEntryTimestamp(sessionId, updatedEntry);
-
-		return vscode.Uri.file(entry.folderPath);
+		return await this.metadataStore.getSessionWorkspaceFolder(sessionId);
 	}
 
-	private async updateEntryTimestamp(sessionId: string, entry: WorkspaceFolderEntry): Promise<void> {
-		const data = this.extensionContext.globalState.get<Record<string, WorkspaceFolderEntry>>(CHAT_SESSION_WORKSPACE_FOLDER_MEMENTO_KEY, {});
-		data[sessionId] = entry;
-		await this.extensionContext.globalState.update(CHAT_SESSION_WORKSPACE_FOLDER_MEMENTO_KEY, data);
+	async handleRequestCompleted(workspaceFolderUri: vscode.Uri): Promise<void> {
+		// Stage all changes
+		await this.gitService.add(workspaceFolderUri, []);
+
+		// Clear changes cache
+		this.workspaceFolderChanges.delete(workspaceFolderUri);
+	}
+
+	async getWorkspaceChanges(workspaceFolderUri: vscode.Uri): Promise<readonly ChatSessionWorktreeFile[] | undefined> {
+		return this.workspaceChangesSequencer.queue(workspaceFolderUri.toString(), async () => {
+
+			const cachedChanges = this.workspaceFolderChanges.get(workspaceFolderUri);
+			if (cachedChanges) {
+				return cachedChanges;
+			}
+
+			const repository = await this.gitService.getRepository(workspaceFolderUri);
+			if (!repository?.changes) {
+				return [];
+			}
+
+			const changes: ChatSessionWorktreeFile[] = [];
+			for (const change of [...repository.changes.indexChanges, ...repository.changes.workingTree]) {
+				try {
+					const fileStats = await this.gitService.diffIndexWithHEADShortStats(change.uri);
+					changes.push({
+						filePath: change.uri.fsPath,
+						originalFilePath: change.status !== 1 /* INDEX_ADDED */
+							? change.originalUri?.fsPath
+							: undefined,
+						modifiedFilePath: change.status !== 2 /* INDEX_DELETED */
+							? change.uri.fsPath
+							: undefined,
+						statistics: {
+							additions: fileStats?.insertions ?? 0,
+							deletions: fileStats?.deletions ?? 0
+						}
+					} satisfies ChatSessionWorktreeFile);
+				} catch (error) { }
+			}
+
+			this.workspaceFolderChanges.set(workspaceFolderUri, changes);
+			return changes;
+		});
 	}
 }

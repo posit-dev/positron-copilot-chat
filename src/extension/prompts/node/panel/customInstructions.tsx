@@ -10,6 +10,7 @@ import { CustomInstructionsKind, ICustomInstructions, ICustomInstructionsService
 import { IFileSystemService } from '../../../../platform/filesystem/common/fileSystemService';
 import { ILogService } from '../../../../platform/log/common/logService';
 import { IPromptPathRepresentationService } from '../../../../platform/prompts/common/promptPathRepresentationService';
+import { IWorkspaceService } from '../../../../platform/workspace/common/workspaceService';
 import { isUri } from '../../../../util/common/types';
 import { ResourceSet } from '../../../../util/vs/base/common/map';
 import { isString } from '../../../../util/vs/base/common/types';
@@ -58,6 +59,7 @@ export class CustomInstructions extends PromptElement<CustomInstructionsProps> {
 		@IPromptVariablesService private readonly promptVariablesService: IPromptVariablesService,
 		@IFileSystemService private readonly fileSystemService: IFileSystemService,
 		@ILogService private readonly logService: ILogService,
+		@IWorkspaceService private readonly workspaceService: IWorkspaceService,
 	) {
 		super(props);
 	}
@@ -70,6 +72,7 @@ export class CustomInstructions extends PromptElement<CustomInstructionsProps> {
 
 		if (includeCodeGenerationInstructions !== false) {
 			const hasSeen = new ResourceSet();
+			const hasSeenContent = new Set();
 			if (this.props.chatVariables) {
 				for (const variable of this.props.chatVariables) {
 					if (isPromptInstruction(variable)) {
@@ -81,9 +84,10 @@ export class CustomInstructions extends PromptElement<CustomInstructionsProps> {
 							chunks.push(<TextChunk>{value}</TextChunk>);
 						} else if (isUri(value) && !hasSeen.has(value)) {
 							hasSeen.add(value);
-							const chunk = await this.createElementFromURI(value, variable.reference.toolReferences);
-							if (chunk) {
-								chunks.push(chunk);
+							const element = await this.createElementFromURI(value, variable.reference.toolReferences);
+							if (element && !hasSeenContent.has(element.content)) {
+								hasSeenContent.add(element.content);
+								chunks.push(element.chuck);
 							}
 						}
 					}
@@ -93,9 +97,10 @@ export class CustomInstructions extends PromptElement<CustomInstructionsProps> {
 			for (const instructionFile of instructionFiles) {
 				if (!hasSeen.has(instructionFile)) {
 					hasSeen.add(instructionFile);
-					const chunk = await this.createElementFromURI(instructionFile);
-					if (chunk) {
-						chunks.push(chunk);
+					const element = await this.createElementFromURI(instructionFile);
+					if (element && !hasSeenContent.has(element.content)) {
+						hasSeenContent.add(element.content);
+						chunks.push(element.chuck);
 					}
 				}
 			}
@@ -127,10 +132,12 @@ export class CustomInstructions extends PromptElement<CustomInstructionsProps> {
 			return undefined;
 		}
 		const introduction = customIntroduction ?? 'When generating code, please follow these user provided coding instructions.';
+		const isMultiRoot = this.workspaceService.getWorkspaceFolders().length > 1;
+		const multiRootHint = isMultiRoot && ' This is a multi-root workspace. The instructions below may come from different workspace folders. Apply each set of instructions to the folder it belongs to.';
 		const systemMessageConflictWarning = includeSystemMessageConflictWarning && ' You can ignore an instruction if it contradicts a system message.';
 
 		return (<>
-			{introduction}{systemMessageConflictWarning}<br />
+			{introduction}{multiRootHint}{systemMessageConflictWarning}<br />
 			<Tag name='instructions'>
 				{
 					...chunks
@@ -140,17 +147,28 @@ export class CustomInstructions extends PromptElement<CustomInstructionsProps> {
 		</>);
 	}
 
-	private async createElementFromURI(fileUri: URI, toolReferences?: readonly ChatLanguageModelToolReference[]): Promise<PromptElement | undefined> {
+	private async createElementFromURI(fileUri: URI, toolReferences?: readonly ChatLanguageModelToolReference[]): Promise<{ chuck: PromptElement; content: string } | undefined> {
 		try {
 			const fileContents = await this.fileSystemService.readFile(fileUri);
 			let content = new TextDecoder().decode(fileContents);
 			if (toolReferences && toolReferences.length > 0) {
 				content = await this.promptVariablesService.resolveToolReferencesInPrompt(content, toolReferences);
 			}
-			return <Tag name='attachment' attrs={{ filePath: this.promptPathRepresentationService.getFilePath(fileUri) }}>
-				<references value={[new InstructionFileReference(fileUri, content)]} />
-				<TextChunk>{content}</TextChunk>
-			</Tag>;
+			const attrs: Record<string, string> = { filePath: this.promptPathRepresentationService.getFilePath(fileUri) };
+			const folders = this.workspaceService.getWorkspaceFolders();
+			if (folders.length > 1) {
+				const folder = this.workspaceService.getWorkspaceFolder(fileUri);
+				if (folder) {
+					attrs.workspaceFolder = this.workspaceService.getWorkspaceFolderName(folder);
+				}
+			}
+			return {
+				chuck: <Tag name='attachment' attrs={attrs}>
+					<references value={[new InstructionFileReference(fileUri, content)]} />
+					<TextChunk>{content}</TextChunk>
+				</Tag>,
+				content
+			};
 		} catch (e) {
 			this.logService.debug(`Instruction file not found: ${fileUri.toString()}`);
 			return undefined;

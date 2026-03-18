@@ -7,23 +7,29 @@ import * as l10n from '@vscode/l10n';
 import { Raw } from '@vscode/prompt-tsx';
 import type { CancellationToken, ChatRequest, ChatResponseProgressPart, ChatResponseReferencePart, ChatResponseStream, ChatResult, LanguageModelToolInformation, Progress } from 'vscode';
 import { IAuthenticationChatUpgradeService } from '../../../platform/authentication/common/authenticationUpgrade';
+import { IChatHookService, SessionStartHookInput, SessionStartHookOutput, StopHookInput, StopHookOutput, SubagentStartHookInput, SubagentStartHookOutput, SubagentStopHookInput, SubagentStopHookOutput } from '../../../platform/chat/common/chatHookService';
 import { FetchStreamSource, IResponsePart } from '../../../platform/chat/common/chatMLFetcher';
 import { CanceledResult, ChatFetchResponseType, ChatResponse } from '../../../platform/chat/common/commonTypes';
+import { IHistoricalTurn, ISessionTranscriptService, ToolRequest } from '../../../platform/chat/common/sessionTranscriptService';
 import { IConfigurationService } from '../../../platform/configuration/common/configurationService';
-import { isAnthropicFamily } from '../../../platform/endpoint/common/chatModelCapabilities';
+import { isAnthropicFamily, isGeminiFamily } from '../../../platform/endpoint/common/chatModelCapabilities';
 import { IEndpointProvider } from '../../../platform/endpoint/common/endpointProvider';
 import { rawPartAsThinkingData } from '../../../platform/endpoint/common/thinkingDataContainer';
 import { ILogService } from '../../../platform/log/common/logService';
-import { OpenAiFunctionDef } from '../../../platform/networking/common/fetch';
+import { isOpenAIContextManagementResponse, OpenAiFunctionDef } from '../../../platform/networking/common/fetch';
 import { IMakeChatRequestOptions } from '../../../platform/networking/common/networking';
+import { OpenAIContextManagementResponse } from '../../../platform/networking/common/openai';
+import { CopilotChatAttr, emitAgentTurnEvent, emitSessionStartEvent, GenAiAttr, GenAiMetrics, GenAiOperationName, GenAiProviderName, StdAttr, truncateForOTel } from '../../../platform/otel/common/index';
+import { IOTelService, SpanKind, SpanStatusCode } from '../../../platform/otel/common/otelService';
 import { IRequestLogger } from '../../../platform/requestLogger/node/requestLogger';
 import { IExperimentationService } from '../../../platform/telemetry/common/nullExperimentationService';
 import { ITelemetryService } from '../../../platform/telemetry/common/telemetry';
 import { computePromptTokenDetails } from '../../../platform/tokenizer/node/promptTokenDetails';
 import { tryFinalizeResponseStream } from '../../../util/common/chatResponseStreamImpl';
+import { timeout } from '../../../util/vs/base/common/async';
 import { CancellationError, isCancellationError } from '../../../util/vs/base/common/errors';
 import { Emitter } from '../../../util/vs/base/common/event';
-import { Disposable, DisposableStore } from '../../../util/vs/base/common/lifecycle';
+import { Disposable } from '../../../util/vs/base/common/lifecycle';
 import { Mutable } from '../../../util/vs/base/common/types';
 import { URI } from '../../../util/vs/base/common/uri';
 import { generateUuid } from '../../../util/vs/base/common/uuid';
@@ -43,8 +49,7 @@ import { ToolFailureEncountered, ToolResultMetadata } from '../../prompts/node/p
 import { ToolName } from '../../tools/common/toolNames';
 import { ToolCallCancelledError } from '../../tools/common/toolsService';
 import { ReadFileParams } from '../../tools/node/readFileTool';
-import { PauseController } from './pauseController';
-
+import { isHookAbortError, processHookResults } from './hookResultProcessor';
 
 export const enum ToolCallLimitBehavior {
 	Confirm,
@@ -74,6 +79,12 @@ export interface IToolCallingLoopOptions {
 	 * The current chat request
 	 */
 	request: ChatRequest;
+	/**
+	 * A getter that returns true if VS Code has requested the extension to
+	 * gracefully yield. When set, it's likely that the editor will immediately
+	 * follow up with a new request in the same conversation.
+	 */
+	yieldRequested?: () => boolean;
 }
 
 export interface IToolCallingResponseEvent {
@@ -87,7 +98,58 @@ export interface IToolCallingBuiltPromptEvent {
 	tools: LanguageModelToolInformation[];
 }
 
-export type ToolCallingLoopFetchOptions = Required<Pick<IMakeChatRequestOptions, 'messages' | 'finishedCb' | 'requestOptions' | 'userInitiatedRequest'>> & Pick<IMakeChatRequestOptions, 'disableThinking'>;
+export type ToolCallingLoopFetchOptions = Required<Pick<IMakeChatRequestOptions, 'messages' | 'finishedCb' | 'requestOptions' | 'userInitiatedRequest' | 'turnId'>> & Pick<IMakeChatRequestOptions, 'disableThinking'>;
+
+interface StartHookResult {
+	/**
+	 * Additional context to add to the agent's context, if any.
+	 */
+	readonly additionalContext?: string;
+}
+
+interface StopHookResult {
+	/**
+	 * Whether the agent should continue (not stop).
+	 */
+	readonly shouldContinue: boolean;
+	/**
+	 * The reasons the agent should continue, if shouldContinue is true.
+	 * Multiple hooks may block with different reasons.
+	 */
+	readonly reasons?: readonly string[];
+}
+
+interface SubagentStartHookResult {
+	/**
+	 * Additional context to add to the subagent's context, if any.
+	 */
+	readonly additionalContext?: string;
+}
+
+interface SubagentStopHookResult {
+	/**
+	 * Whether the subagent should continue (not stop).
+	 */
+	readonly shouldContinue: boolean;
+	/**
+	 * The reasons the subagent should continue, if shouldContinue is true.
+	 * Multiple hooks may block with different reasons.
+	 */
+	readonly reasons?: readonly string[];
+}
+
+/**
+ * Formats a hook context message from blocking reasons.
+ * @param reasons The reasons hooks blocked the agent from stopping
+ * @returns A formatted message for the model to address the requirements
+ */
+function formatHookContext(reasons: readonly string[]): string {
+	if (reasons.length === 1) {
+		return `You were about to complete but a hook blocked you with the following message: "${reasons[0]}". Please address this requirement before completing.`;
+	}
+	const formattedReasons = reasons.map((reason, i) => `${i + 1}. ${reason}`).join('\n');
+	return `You were about to complete but multiple hooks blocked you with the following messages:\n${formattedReasons}\n\nPlease address all of these requirements before completing.`;
+}
 
 /**
  * This is a base class that can be used to implement a tool calling loop
@@ -98,8 +160,22 @@ export type ToolCallingLoopFetchOptions = Required<Pick<IMakeChatRequestOptions,
 export abstract class ToolCallingLoop<TOptions extends IToolCallingLoopOptions = IToolCallingLoopOptions> extends Disposable {
 	private static NextToolCallId = Date.now();
 
+	private static readonly TASK_COMPLETE_TOOL_NAME = 'task_complete';
+
 	private toolCallResults: Record<string, LanguageModelToolResult2> = Object.create(null);
 	private toolCallRounds: IToolCallRound[] = [];
+	private stopHookReason: string | undefined;
+	private additionalHookContext: string | undefined;
+	private stopHookUserInitiated = false;
+
+	public appendAdditionalHookContext(context: string): void {
+		if (!context) {
+			return;
+		}
+		this.additionalHookContext = this.additionalHookContext
+			? `${this.additionalHookContext}\n${context}`
+			: context;
+	}
 
 	private readonly _onDidBuildPrompt = this._register(new Emitter<{ result: IBuildPromptResult; tools: LanguageModelToolInformation[]; promptTokenLength: number; toolTokenCount: number }>());
 	public readonly onDidBuildPrompt = this._onDidBuildPrompt.event;
@@ -121,6 +197,9 @@ export abstract class ToolCallingLoop<TOptions extends IToolCallingLoopOptions =
 		@ITelemetryService protected readonly _telemetryService: ITelemetryService,
 		@IConfigurationService protected readonly _configurationService: IConfigurationService,
 		@IExperimentationService protected readonly _experimentationService: IExperimentationService,
+		@IChatHookService private readonly _chatHookService: IChatHookService,
+		@ISessionTranscriptService protected readonly _sessionTranscriptService: ISessionTranscriptService,
+		@IOTelService protected readonly _otelService: IOTelService,
 	) {
 		super();
 	}
@@ -136,10 +215,21 @@ export abstract class ToolCallingLoop<TOptions extends IToolCallingLoopOptions =
 		const { request } = this.options;
 		const chatVariables = new ChatVariablesCollection(request.references);
 
-		const isContinuation = this.turn.isContinuation;
-		const query = isContinuation ?
-			'Please continue' :
-			this.turn.request.message;
+		const isContinuation = this.turn.isContinuation || !!this.stopHookReason;
+		let query: string;
+		let hasStopHookQuery = false;
+		if (this.stopHookReason) {
+			// Include the stop hook reason as a user message so the model knows what to do.
+			// Wrap with context so the model understands it needs to take action.
+			query = formatHookContext([this.stopHookReason]);
+			this._logService.info(`[ToolCallingLoop] Using stop hook reason as query: ${query}`);
+			this.stopHookReason = undefined; // Clear after use
+			hasStopHookQuery = true;
+		} else if (isContinuation) {
+			query = 'Please continue';
+		} else {
+			query = this.turn.request.message;
+		}
 		// exclude turns from the history that errored due to prompt filtration
 		const history = this.options.conversation.turns.slice(0, -1).filter(turn => turn.responseStatus !== TurnStatus.PromptFiltered);
 
@@ -160,7 +250,9 @@ export abstract class ToolCallingLoop<TOptions extends IToolCallingLoopOptions =
 				availableTools
 			},
 			isContinuation,
+			hasStopHookQuery,
 			modeInstructions: this.options.request.modeInstructions2,
+			additionalHookContext: this.additionalHookContext,
 		};
 	}
 
@@ -169,24 +261,517 @@ export abstract class ToolCallingLoop<TOptions extends IToolCallingLoopOptions =
 		token: CancellationToken
 	): Promise<ChatResponse>;
 
-	private async throwIfCancelled(token: CancellationToken | PauseController) {
-		if (await this.checkAsync(token)) {
+	/**
+	 * Called before the loop stops to give hooks a chance to block the stop.
+	 * @param input The stop hook input containing stop_hook_active flag
+	 * @param outputStream The output stream for displaying messages
+	 * @param token Cancellation token
+	 * @returns Result indicating whether to continue and the reasons
+	 */
+	protected async executeStopHook(input: StopHookInput, sessionId: string, outputStream: ChatResponseStream | undefined, token: CancellationToken): Promise<StopHookResult> {
+		try {
+			const results = await this._chatHookService.executeHook('Stop', this.options.request.hooks, input, sessionId, token);
+
+			const blockingReasons = new Set<string>();
+			processHookResults({
+				hookType: 'Stop',
+				results,
+				outputStream,
+				logService: this._logService,
+				onSuccess: (output) => {
+					if (typeof output === 'object' && output !== null) {
+						const hookOutput = output as StopHookOutput;
+						this._logService.trace(`[ToolCallingLoop] Checking hook output: decision=${hookOutput.decision}, reason=${hookOutput.reason}`);
+						if (hookOutput.decision === 'block' && hookOutput.reason) {
+							this._logService.trace(`[ToolCallingLoop] Stop hook blocked: ${hookOutput.reason}`);
+							blockingReasons.add(hookOutput.reason);
+						}
+					}
+				},
+				// Collect errors as blocking reasons (stderr from exit code != 0)
+				onError: (errorMessage) => {
+					if (errorMessage) {
+						this._logService.trace(`[ToolCallingLoop] Stop hook error collected as blocking reason: ${errorMessage}`);
+						blockingReasons.add(errorMessage);
+					}
+				},
+			});
+
+			if (blockingReasons.size > 0) {
+				return { shouldContinue: true, reasons: [...blockingReasons] };
+			}
+			return { shouldContinue: false };
+		} catch (error) {
+			if (isHookAbortError(error)) {
+				throw error;
+			}
+			this._logService.error('[ToolCallingLoop] Error executing Stop hook', error);
+			return { shouldContinue: false };
+		}
+	}
+
+	/**
+	 * Shows a message when the stop hook blocks the agent from stopping.
+	 * Override in subclasses to customize the display.
+	 * @param outputStream The output stream for displaying messages
+	 * @param reasons The reasons the stop hook blocked stopping
+	 */
+	protected showStopHookBlockedMessage(outputStream: ChatResponseStream | undefined, reasons: readonly string[]): void {
+		if (outputStream) {
+			if (reasons.length === 1) {
+				outputStream.hookProgress('Stop', reasons[0]);
+			} else {
+				const formattedReasons = reasons.map((r, i) => `${i + 1}. ${r}`).join('\n');
+				outputStream.hookProgress('Stop', formattedReasons);
+			}
+		}
+		this._logService.trace(`[ToolCallingLoop] Stop hook blocked stopping: ${reasons.join('; ')}`);
+	}
+
+	private static readonly MAX_AUTOPILOT_RETRIES = 3;
+	private static readonly MAX_AUTOPILOT_ITERATIONS = 5;
+	private autopilotRetryCount = 0;
+	private autopilotIterationCount = 0;
+
+	private taskCompleted = false;
+	private autopilotStopHookActive = false;
+
+	/**
+	 * Autopilot stop hook — the model needs to call `task_complete` to signal it's done.
+	 * If it stops without calling it, we nudge it to keep going. Returns a continuation
+	 * message or `undefined` to let the loop stop.
+	 */
+	protected shouldAutopilotContinue(result: IToolCallSingleResult): string | undefined {
+		if (this.taskCompleted) {
+			this._logService.info('[ToolCallingLoop] Autopilot: task_complete was called, stopping');
+			return undefined;
+		}
+
+		// might have called task_complete alongside other tools in an earlier round
+		const calledTaskComplete = this.toolCallRounds.some(
+			round => round.toolCalls.some(tc => tc.name === ToolCallingLoop.TASK_COMPLETE_TOOL_NAME)
+		);
+		if (calledTaskComplete) {
+			this.taskCompleted = true;
+			this._logService.info('[ToolCallingLoop] Autopilot: task_complete found in history, stopping');
+			return undefined;
+		}
+
+		// safety valve — only give up after exhausting all continuation attempts
+		if (this.autopilotIterationCount >= ToolCallingLoop.MAX_AUTOPILOT_ITERATIONS) {
+			this._logService.info(`[ToolCallingLoop] Autopilot: hit max iterations (${ToolCallingLoop.MAX_AUTOPILOT_ITERATIONS}), letting it stop`);
+			return undefined;
+		}
+
+		this.autopilotIterationCount++;
+		return 'You have not yet marked the task as complete using the task_complete tool. ' +
+			'You MUST call task_complete when done — whether the task involved code changes, answering a question, or any other interaction.\n\n' +
+			'Do NOT repeat or restate your previous response. Pick up where you left off.\n\n' +
+			'If you were planning, stop planning and start implementing. ' +
+			'You are not done until you have fully completed the task.\n\n' +
+			'IMPORTANT: Do NOT call task_complete if:\n' +
+			'- You have open questions or ambiguities — make good decisions and keep working\n' +
+			'- You encountered an error — try to resolve it or find an alternative approach\n' +
+			'- There are remaining steps — complete them first\n\n' +
+			'When you ARE done, first provide a brief text summary of what was accomplished, then call task_complete. ' +
+			'Both the summary message and the tool call are required.\n\n' +
+			'Keep working autonomously until the task is truly finished, then call task_complete.';
+	}
+
+	/**
+	 * Whether the loop should auto-retry after a failed fetch in auto-approve/autopilot mode.
+	 * Does not retry rate-limited, quota-exceeded, or cancellation errors.
+	 */
+	private shouldAutoRetry(response: ChatResponse): boolean {
+		const permLevel = this.options.request.permissionLevel;
+		if (permLevel !== 'autoApprove' && permLevel !== 'autopilot') {
+			return false;
+		}
+		if (this.autopilotRetryCount >= ToolCallingLoop.MAX_AUTOPILOT_RETRIES) {
+			return false;
+		}
+		switch (response.type) {
+			case ChatFetchResponseType.RateLimited:
+			case ChatFetchResponseType.QuotaExceeded:
+			case ChatFetchResponseType.Canceled:
+			case ChatFetchResponseType.OffTopic:
+				return false;
+			default:
+				return response.type !== ChatFetchResponseType.Success;
+		}
+	}
+
+	/**
+	 * Called when a session starts to allow hooks to provide additional context.
+	 * @param input The session start hook input containing source
+	 * @param outputStream The output stream for displaying messages
+	 * @param token Cancellation token
+	 * @returns Result containing additional context from hooks
+	 */
+	protected async executeSessionStartHook(input: SessionStartHookInput, sessionId: string, outputStream: ChatResponseStream | undefined, token: CancellationToken): Promise<StartHookResult> {
+		try {
+			const results = await this._chatHookService.executeHook('SessionStart', this.options.request.hooks, input, sessionId, token);
+
+			const additionalContexts: string[] = [];
+			processHookResults({
+				hookType: 'SessionStart',
+				results,
+				outputStream,
+				logService: this._logService,
+				onSuccess: (output) => {
+					if (typeof output === 'object' && output !== null) {
+						const hookOutput = output as SessionStartHookOutput;
+						const additionalContext = hookOutput.hookSpecificOutput?.additionalContext;
+						if (additionalContext) {
+							additionalContexts.push(additionalContext);
+							this._logService.trace(`[ToolCallingLoop] SessionStart hook provided context: ${additionalContext.substring(0, 100)}...`);
+						}
+					}
+				},
+				// SessionStart blocking errors and stopReason are silently ignored
+				ignoreErrors: true,
+			});
+
+			return {
+				additionalContext: additionalContexts.length > 0 ? additionalContexts.join('\n') : undefined
+			};
+		} catch (error) {
+			if (isHookAbortError(error)) {
+				throw error;
+			}
+			this._logService.error('[ToolCallingLoop] Error executing SessionStart hook', error);
+			return {};
+		}
+	}
+
+	/**
+	 * Called when a subagent starts to allow hooks to provide additional context.
+	 * @param input The subagent start hook input containing agent_id and agent_type
+	 * @param outputStream The output stream for displaying messages
+	 * @param token Cancellation token
+	 * @returns Result containing additional context from hooks
+	 */
+	protected async executeSubagentStartHook(input: SubagentStartHookInput, sessionId: string, outputStream: ChatResponseStream | undefined, token: CancellationToken): Promise<SubagentStartHookResult> {
+		try {
+			const results = await this._chatHookService.executeHook('SubagentStart', this.options.request.hooks, input, sessionId, token);
+
+			const additionalContexts: string[] = [];
+			processHookResults({
+				hookType: 'SubagentStart',
+				results,
+				outputStream,
+				logService: this._logService,
+				onSuccess: (output) => {
+					if (typeof output === 'object' && output !== null) {
+						const hookOutput = output as SubagentStartHookOutput;
+						const additionalContext = hookOutput.hookSpecificOutput?.additionalContext;
+						if (additionalContext) {
+							additionalContexts.push(additionalContext);
+							this._logService.trace(`[ToolCallingLoop] SubagentStart hook provided context: ${additionalContext.substring(0, 100)}...`);
+						}
+					}
+				},
+				// SubagentStart blocking errors and stopReason are silently ignored
+				ignoreErrors: true,
+			});
+
+			return {
+				additionalContext: additionalContexts.length > 0 ? additionalContexts.join('\n') : undefined
+			};
+		} catch (error) {
+			if (isHookAbortError(error)) {
+				throw error;
+			}
+			this._logService.error('[ToolCallingLoop] Error executing SubagentStart hook', error);
+			return {};
+		}
+	}
+
+	/**
+	 * Called before a subagent stops to give hooks a chance to block the stop.
+	 * @param input The subagent stop hook input containing agent_id, agent_type, and stop_hook_active flag
+	 * @param outputStream The output stream for displaying messages
+	 * @param token Cancellation token
+	 * @returns Result indicating whether to continue and the reasons
+	 */
+	protected async executeSubagentStopHook(input: SubagentStopHookInput, sessionId: string, outputStream: ChatResponseStream | undefined, token: CancellationToken): Promise<SubagentStopHookResult> {
+		try {
+			const results = await this._chatHookService.executeHook('SubagentStop', this.options.request.hooks, input, sessionId, token);
+
+			const blockingReasons = new Set<string>();
+			processHookResults({
+				hookType: 'SubagentStop',
+				results,
+				outputStream,
+				logService: this._logService,
+				onSuccess: (output) => {
+					if (typeof output === 'object' && output !== null) {
+						const hookOutput = output as SubagentStopHookOutput;
+						this._logService.trace(`[ToolCallingLoop] Checking SubagentStop hook output: decision=${hookOutput.decision}, reason=${hookOutput.reason}`);
+						if (hookOutput.decision === 'block' && hookOutput.reason) {
+							this._logService.trace(`[ToolCallingLoop] SubagentStop hook blocked: ${hookOutput.reason}`);
+							blockingReasons.add(hookOutput.reason);
+						}
+					}
+				},
+				// Collect errors as blocking reasons (stderr from exit code != 0)
+				onError: (errorMessage) => {
+					if (errorMessage) {
+						this._logService.trace(`[ToolCallingLoop] SubagentStop hook error collected as blocking reason: ${errorMessage}`);
+						blockingReasons.add(errorMessage);
+					}
+				},
+			});
+
+			if (blockingReasons.size > 0) {
+				return { shouldContinue: true, reasons: [...blockingReasons] };
+			}
+			return { shouldContinue: false };
+		} catch (error) {
+			if (isHookAbortError(error)) {
+				throw error;
+			}
+			this._logService.error('[ToolCallingLoop] Error executing SubagentStop hook', error);
+			return { shouldContinue: false };
+		}
+	}
+
+	/**
+	 * Shows a message when the subagent stop hook blocks the subagent from stopping.
+	 * Override in subclasses to customize the display.
+	 * @param outputStream The output stream for displaying messages
+	 * @param reasons The reasons the subagent stop hook blocked stopping
+	 */
+	protected showSubagentStopHookBlockedMessage(outputStream: ChatResponseStream | undefined, reasons: readonly string[]): void {
+		if (outputStream) {
+			if (reasons.length === 1) {
+				outputStream.hookProgress('SubagentStop', reasons[0]);
+			} else {
+				const formattedReasons = reasons.map((r, i) => `${i + 1}. ${r}`).join('\n');
+				outputStream.hookProgress('SubagentStop', formattedReasons);
+			}
+		}
+		this._logService.trace(`[ToolCallingLoop] SubagentStop hook blocked stopping: ${reasons.join('; ')}`);
+	}
+
+	private throwIfCancelled(token: CancellationToken) {
+		if (token.isCancellationRequested) {
+			this.turn.setResponse(TurnStatus.Cancelled, undefined, undefined, CanceledResult);
 			throw new CancellationError();
 		}
 	}
 
-	public async run(outputStream: ChatResponseStream | undefined, token: CancellationToken | PauseController): Promise<IToolCallLoopResult> {
+	/**
+	 * Executes start hooks (SessionStart for regular sessions, SubagentStart for subagents).
+	 * Should be called before run() to allow hooks to provide context before the first prompt.
+	 *
+	 * - For subagents: Always executes SubagentStart hook
+	 * - For regular sessions: Only executes SessionStart hook on the first turn
+	 * @throws HookAbortError if a hook requests the session/subagent to abort
+	 */
+	public async runStartHooks(outputStream: ChatResponseStream | undefined, token: CancellationToken): Promise<void> {
+		const sessionId = this.options.conversation.sessionId;
+		const hasHooks = this.options.request.hasHooksEnabled;
+
+		// Report which hooks are configured for this request
+		this._chatHookService.logConfiguredHooks(this.options.request.hooks);
+
+		// Execute SubagentStart hook for subagent requests, or SessionStart hook for first turn of regular sessions
+		if (this.options.request.subAgentInvocationId) {
+			const startHookResult = await this.executeSubagentStartHook({
+				agent_id: this.options.request.subAgentInvocationId,
+				agent_type: this.options.request.subAgentName ?? 'default',
+			}, sessionId, outputStream, token);
+			if (startHookResult.additionalContext) {
+				this.additionalHookContext = startHookResult.additionalContext;
+				this._logService.info(`[ToolCallingLoop] SubagentStart hook provided context for subagent ${this.options.request.subAgentInvocationId}`);
+			}
+		} else {
+			const isFirstTurn = this.options.conversation.turns.length === 1;
+
+			if (hasHooks) {
+				// Build history from prior turns (excluding the current one) for transcript replay
+				const priorTurns = this.options.conversation.turns.slice(0, -1);
+				const history: IHistoricalTurn[] = priorTurns.map(turn => ({
+					userMessage: turn.request.message,
+					timestamp: turn.startTime,
+					rounds: turn.rounds.map(round => ({
+						response: round.response,
+						toolCalls: round.toolCalls.map(tc => ({
+							name: tc.name,
+							arguments: tc.arguments,
+							id: tc.id,
+						})),
+						reasoningText: round.thinking
+							? (Array.isArray(round.thinking.text) ? round.thinking.text.join('') : round.thinking.text)
+							: undefined,
+						timestamp: round.timestamp,
+					})),
+				}));
+
+				// Start the transcript (will replay history if no file exists yet)
+				await this._sessionTranscriptService.startSession(sessionId, undefined, history.length > 0 ? history : undefined);
+			}
+
+			if (isFirstTurn) {
+				const startHookResult = await this.executeSessionStartHook({
+					source: 'new',
+				}, sessionId, outputStream, token);
+				if (startHookResult.additionalContext) {
+					this.additionalHookContext = startHookResult.additionalContext;
+					this._logService.info('[ToolCallingLoop] SessionStart hook provided context for session');
+				}
+			}
+		}
+
+		// Log the user message for the transcript (no-ops if session was not started)
+		this._sessionTranscriptService.logUserMessage(
+			sessionId,
+			this.turn.request.message,
+		);
+	}
+
+	public async run(outputStream: ChatResponseStream | undefined, token: CancellationToken): Promise<IToolCallLoopResult> {
+		const agentName = (this.options.request as { participant?: string }).participant ?? 'GitHub Copilot Chat';
+
+		// If this is a subagent request, look up the parent trace context stored by the parent agent's execute_tool span
+		const parentRequestId = (this.options.request as { parentRequestId?: string }).parentRequestId;
+		const parentTraceContext = parentRequestId
+			? this._otelService.getStoredTraceContext(`subagent:${parentRequestId}`)
+			: undefined;
+
+		return this._otelService.startActiveSpan(
+			`invoke_agent ${agentName}`,
+			{
+				kind: SpanKind.INTERNAL,
+				attributes: {
+					[GenAiAttr.OPERATION_NAME]: GenAiOperationName.INVOKE_AGENT,
+					[GenAiAttr.PROVIDER_NAME]: GenAiProviderName.GITHUB,
+					[GenAiAttr.AGENT_NAME]: agentName,
+					[GenAiAttr.CONVERSATION_ID]: this.options.conversation.sessionId,
+				},
+				parentTraceContext,
+			},
+			async (span) => {
+				const otelStartTime = Date.now();
+
+				// Emit session start event and metric for top-level agent invocations (not subagents)
+				if (!parentTraceContext) {
+					GenAiMetrics.incrementSessionCount(this._otelService);
+					try {
+						const endpoint = await this._endpointProvider.getChatEndpoint(this.options.request);
+						emitSessionStartEvent(this._otelService, this.options.conversation.sessionId, endpoint.model, agentName);
+					} catch {
+						emitSessionStartEvent(this._otelService, this.options.conversation.sessionId, 'unknown', agentName);
+					}
+				}
+
+				// Set request model from the endpoint
+				try {
+					const endpoint = await this._endpointProvider.getChatEndpoint(this.options.request);
+					span.setAttribute(GenAiAttr.REQUEST_MODEL, endpoint.model);
+				} catch { /* endpoint not available yet, will be set on response */ }
+
+				// Capture user input message (opt-in)
+				if (this._otelService.config.captureContent) {
+					span.setAttribute(GenAiAttr.INPUT_MESSAGES, truncateForOTel(JSON.stringify([
+						{ role: 'user', parts: [{ type: 'text', content: this.turn.request.message }] }
+					])));
+				}
+
+				// Accumulate token usage across all LLM turns per GenAI agent span spec
+				let totalInputTokens = 0;
+				let totalOutputTokens = 0;
+				let lastResolvedModel: string | undefined;
+				let turnIndex = 0;
+				const tokenListener = this.onDidReceiveResponse(({ response }) => {
+					const turnInputTokens = response.type === ChatFetchResponseType.Success ? (response.usage?.prompt_tokens || 0) : 0;
+					const turnOutputTokens = response.type === ChatFetchResponseType.Success ? (response.usage?.completion_tokens || 0) : 0;
+					if (response.type === ChatFetchResponseType.Success && response.usage) {
+						totalInputTokens += turnInputTokens;
+						totalOutputTokens += turnOutputTokens;
+					}
+					if (response.type === ChatFetchResponseType.Success && response.resolvedModel) {
+						lastResolvedModel = response.resolvedModel;
+					}
+					emitAgentTurnEvent(this._otelService, turnIndex, turnInputTokens, turnOutputTokens, 0);
+					turnIndex++;
+				});
+
+				try {
+					const result = await this._runLoop(outputStream, token);
+					span.setAttributes({
+						[CopilotChatAttr.TURN_COUNT]: result.toolCallRounds.length,
+						[GenAiAttr.USAGE_INPUT_TOKENS]: totalInputTokens,
+						[GenAiAttr.USAGE_OUTPUT_TOKENS]: totalOutputTokens,
+						...(lastResolvedModel ? { [GenAiAttr.RESPONSE_MODEL]: lastResolvedModel } : {}),
+					});
+					// Capture agent output message and tool definitions (opt-in)
+					if (this._otelService.config.captureContent) {
+						const lastRound = result.toolCallRounds.at(-1);
+						if (lastRound?.response) {
+							const responseText = Array.isArray(lastRound.response) ? lastRound.response.join('') : lastRound.response;
+							span.setAttribute(GenAiAttr.OUTPUT_MESSAGES, truncateForOTel(JSON.stringify([
+								{ role: 'assistant', parts: [{ type: 'text', content: responseText }] }
+							])));
+						}
+						// Log tool definitions once on the agent span (same set across all turns)
+						if (result.availableTools.length > 0) {
+							span.setAttribute(GenAiAttr.TOOL_DEFINITIONS, truncateForOTel(JSON.stringify(
+								result.availableTools.map(t => ({ type: 'function', name: t.name, description: t.description }))
+							)));
+						}
+					}
+					span.setStatus(SpanStatusCode.OK);
+
+					// Record agent-level metrics
+					const durationSec = (Date.now() - otelStartTime) / 1000;
+					GenAiMetrics.recordAgentDuration(this._otelService, agentName, durationSec);
+					GenAiMetrics.recordAgentTurnCount(this._otelService, agentName, result.toolCallRounds.length);
+
+					return result;
+				} catch (err) {
+					span.setStatus(SpanStatusCode.ERROR, err instanceof Error ? err.message : String(err));
+					span.setAttribute(StdAttr.ERROR_TYPE, err instanceof Error ? err.constructor.name : 'Error');
+					throw err;
+				} finally {
+					tokenListener.dispose();
+				}
+			},
+		);
+	}
+
+	private async _runLoop(outputStream: ChatResponseStream | undefined, token: CancellationToken): Promise<IToolCallLoopResult> {
 		let i = 0;
 		let lastResult: IToolCallSingleResult | undefined;
 		let lastRequestMessagesStartingIndexForRun: number | undefined;
+		let stopHookActive = false;
+		const sessionId = this.options.conversation.sessionId;
 
 		while (true) {
 			if (lastResult && i++ >= this.options.toolCallLimit) {
-				lastResult = this.hitToolCallLimit(outputStream, lastResult);
-				break;
+				// In Autopilot mode, silently increase the limit and continue
+				// without showing the confirmation dialog, up to a hard cap.
+				const permLevel = this.options.request.permissionLevel;
+				if (permLevel === 'autopilot' && this.options.toolCallLimit < 200) {
+					this.options.toolCallLimit = Math.min(Math.round(this.options.toolCallLimit * 3 / 2), 200);
+				} else {
+					lastResult = this.hitToolCallLimit(outputStream, lastResult);
+					break;
+				}
+			}
+
+			// Check if VS Code has requested we gracefully yield before starting the next iteration.
+			// In autopilot mode, don't yield until the task is actually complete.
+			if (lastResult && this.options.yieldRequested?.()) {
+				if (this.options.request.permissionLevel !== 'autopilot' || this.taskCompleted) {
+					break;
+				}
 			}
 
 			try {
+				const turnId = String(i);
+				this._sessionTranscriptService.logAssistantTurnStart(sessionId, turnId);
 				const result = await this.runOne(outputStream, i, token);
 				if (lastRequestMessagesStartingIndexForRun === undefined) {
 					lastRequestMessagesStartingIndexForRun = result.lastRequestMessages.length - 1;
@@ -197,13 +782,84 @@ export abstract class ToolCallingLoop<TOptions extends IToolCallingLoopOptions =
 				};
 
 				this.toolCallRounds.push(result.round);
+				this._sessionTranscriptService.logAssistantTurnEnd(sessionId, turnId);
+
+				// If the model produced productive (non-task_complete) tool calls after being nudged,
+				// reset the stop hook flag and iteration count so it can be nudged again.
+				if (this.autopilotStopHookActive && result.round.toolCalls.length && !result.round.toolCalls.some(tc => tc.name === ToolCallingLoop.TASK_COMPLETE_TOOL_NAME)) {
+					this.autopilotStopHookActive = false;
+					this.autopilotIterationCount = 0;
+				}
+
 				if (!result.round.toolCalls.length || result.response.type !== ChatFetchResponseType.Success) {
-					lastResult = lastResult;
+					// If cancelled, don't run stop hooks - just break immediately
+					if (token.isCancellationRequested) {
+						break;
+					}
+
+					// In auto-approve modes, auto-retry on transient errors (not rate-limited or quota-exceeded)
+					if (result.response.type !== ChatFetchResponseType.Success && this.shouldAutoRetry(result.response)) {
+						this.autopilotRetryCount++;
+						this._logService.info(`[ToolCallingLoop] Auto-retrying on error (attempt ${this.autopilotRetryCount}/${ToolCallingLoop.MAX_AUTOPILOT_RETRIES}): ${result.response.type}`);
+						await timeout(1000, token);
+						continue;
+					}
+
+					// Before stopping, execute the stop hook
+					if (this.options.request.subAgentInvocationId) {
+						const stopHookResult = await this.executeSubagentStopHook({
+							agent_id: this.options.request.subAgentInvocationId,
+							agent_type: this.options.request.subAgentName ?? 'default',
+							stop_hook_active: stopHookActive,
+						}, sessionId, outputStream, token);
+						const joinedReasons = stopHookResult.reasons?.join('; ');
+						this._logService.info(`[ToolCallingLoop] Subagent stop hook result: shouldContinue=${stopHookResult.shouldContinue}, reasons=${joinedReasons}`);
+						if (stopHookResult.shouldContinue && stopHookResult.reasons?.length) {
+							// The stop hook blocked stopping - show reasons and continue
+							this.showSubagentStopHookBlockedMessage(outputStream, stopHookResult.reasons);
+							// Store the joined reasons so it can be passed to the model in the next prompt
+							this.stopHookReason = joinedReasons;
+							// Also persist on the round so it survives across turns
+							result.round.hookContext = formatHookContext(stopHookResult.reasons);
+							this._logService.info(`[ToolCallingLoop] Subagent stop hook blocked, continuing with reasons: ${joinedReasons}`);
+							stopHookActive = true;
+							continue;
+						}
+					} else {
+						const stopHookResult = await this.executeStopHook({ stop_hook_active: stopHookActive }, sessionId, outputStream, token);
+						const joinedReasons = stopHookResult.reasons?.join('; ');
+						this._logService.info(`[ToolCallingLoop] Stop hook result: shouldContinue=${stopHookResult.shouldContinue}, reasons=${joinedReasons}`);
+						if (stopHookResult.shouldContinue && stopHookResult.reasons?.length) {
+							// The stop hook blocked stopping - show reasons and continue
+							this.showStopHookBlockedMessage(outputStream, stopHookResult.reasons);
+							// Store the joined reasons so it can be passed to the model in the next prompt
+							this.stopHookReason = joinedReasons;
+							// Also persist on the round so it survives across turns
+							result.round.hookContext = formatHookContext(stopHookResult.reasons);
+							this._logService.info(`[ToolCallingLoop] Stop hook blocked, continuing with reasons: ${joinedReasons}`);
+							stopHookActive = true;
+							this.stopHookUserInitiated = true;
+							continue;
+						}
+					}
+
+					// In Autopilot mode, check if the task is actually done before stopping.
+					// This acts as an internal stop hook that keeps the agent churning until completion.
+					if (this.options.request.permissionLevel === 'autopilot' && result.response.type === ChatFetchResponseType.Success) {
+						const autopilotContinue = this.shouldAutopilotContinue(result);
+						if (autopilotContinue) {
+							this._logService.info(`[ToolCallingLoop] Autopilot internal stop hook: continuing because task may not be complete`);
+							this.stopHookReason = autopilotContinue;
+							result.round.hookContext = formatHookContext([autopilotContinue]);
+							this.autopilotStopHookActive = true;
+							continue;
+						}
+					}
+
 					break;
 				}
 			} catch (e) {
 				if (isCancellationError(e) && lastResult) {
-					lastResult = lastResult;
 					break;
 				}
 
@@ -222,7 +878,7 @@ export abstract class ToolCallingLoop<TOptions extends IToolCallingLoopOptions =
 				for (const part of result.content) {
 					if (part instanceof LanguageModelDataPart2 && part.mimeType === 'application/pull-request+json' && part.audience?.includes(LanguageModelPartAudience.User)) {
 						const data: { uri: string; title: string; description: string; author: string; linkTag: string } = JSON.parse(part.data.toString());
-						outputStream?.push(new ChatResponsePullRequestPart(URI.parse(data.uri), data.title, data.description, data.author, data.linkTag));
+						outputStream?.push(new ChatResponsePullRequestPart({ command: 'github.copilot.chat.openPullRequestReroute', title: l10n.t('View Pull Request {0}', data.linkTag), arguments: [Number(data.linkTag.substring(1))] }, data.title, data.description, data.author, data.linkTag));
 					}
 				}
 			}
@@ -346,12 +1002,12 @@ export abstract class ToolCallingLoop<TOptions extends IToolCallingLoopOptions =
 	}
 
 	/** Runs a single iteration of the tool calling loop. */
-	public async runOne(outputStream: ChatResponseStream | undefined, iterationNumber: number, token: CancellationToken | PauseController): Promise<IToolCallSingleResult> {
+	public async runOne(outputStream: ChatResponseStream | undefined, iterationNumber: number, token: CancellationToken): Promise<IToolCallSingleResult> {
 		let availableTools = await this.getAvailableTools(outputStream, token);
 		const context = this.createPromptContext(availableTools, outputStream);
 		const isContinuation = context.isContinuation || false;
 		const buildPromptResult: IBuildPromptResult = await this.buildPrompt2(context, outputStream, token);
-		await this.throwIfCancelled(token);
+		this.throwIfCancelled(token);
 		this.turn.addReferences(buildPromptResult.references);
 		// Possible the tool call resulted in new tools getting added.
 		availableTools = await this.getAvailableTools(outputStream, token);
@@ -365,9 +1021,14 @@ export abstract class ToolCallingLoop<TOptions extends IToolCallingLoopOptions =
 		const tokenizer = endpoint.acquireTokenizer();
 		const promptTokenLength = await tokenizer.countMessagesTokens(buildPromptResult.messages);
 		const toolTokenCount = availableTools.length > 0 ? await tokenizer.countToolTokens(availableTools) : 0;
-		await this.throwIfCancelled(token);
+		this.throwIfCancelled(token);
 		this._onDidBuildPrompt.fire({ result: buildPromptResult, tools: availableTools, promptTokenLength, toolTokenCount });
 		this._logService.trace('Built prompt');
+
+		// Tool calls happen during prompt building. Check yield again here to see if we should abort prior to sending off the next request.
+		if (iterationNumber > 0 && this.options.yieldRequested?.()) {
+			throw new CancellationError();
+		}
 
 		// todo@connor4312: can interaction outcome logic be implemented in a more generic way?
 		const interactionOutcomeComputer = new InteractionOutcomeComputer(this.options.interactionContext);
@@ -404,24 +1065,11 @@ export abstract class ToolCallingLoop<TOptions extends IToolCallingLoopOptions =
 			fetchStreamSource = new FetchStreamSource();
 			processResponsePromise = responseProcessor.processResponse(undefined, fetchStreamSource.stream, stream, token);
 
-			const disposables = new DisposableStore();
-			if (token instanceof PauseController) {
-				disposables.add(token.onDidChangePause(isPaused => {
-					if (isPaused) {
-						fetchStreamSource?.pause();
-					} else {
-						fetchStreamSource?.unpause();
-					}
-				}));
-			}
-
 			// Allows the response processor to do an early stop of the LLM request.
 			processResponsePromise.finally(() => {
 				// The response processor indicates that it has finished processing the response,
 				// so let's stop the request if it's still in flight.
 				stopEarly = true;
-
-				disposables.dispose();
 			});
 		}
 
@@ -440,13 +1088,16 @@ export abstract class ToolCallingLoop<TOptions extends IToolCallingLoopOptions =
 				parameters: toolInfo.inputSchema,
 			} satisfies OpenAiFunctionDef;
 		}) : undefined;
+
 		let statefulMarker: string | undefined;
 		const toolCalls: IToolCall[] = [];
 		let thinkingItem: ThinkingDataItem | undefined;
 		const disableThinking = isContinuation && isAnthropicFamily(endpoint) && !ToolCallingLoop.messagesContainThinking(buildPromptResult.messages);
 		let phase: string | undefined;
+		let compaction: OpenAIContextManagementResponse | undefined;
 		const fetchResult = await this.fetch({
-			messages: this.applyMessagePostProcessing(buildPromptResult.messages),
+			messages: this.applyMessagePostProcessing(buildPromptResult.messages, { stripOrphanedToolCalls: isGeminiFamily(endpoint) }),
+			turnId: this.turn.id,
 			finishedCb: async (text, index, delta) => {
 				fetchStreamSource?.update(text, delta);
 				if (delta.copilotToolCalls) {
@@ -473,6 +1124,9 @@ export abstract class ToolCallingLoop<TOptions extends IToolCallingLoopOptions =
 				if (delta.phase) {
 					phase = delta.phase;
 				}
+				if (delta.contextManagement && isOpenAIContextManagementResponse(delta.contextManagement)) {
+					compaction = delta.contextManagement;
+				}
 				return stopEarly ? text.length : undefined;
 			},
 			requestOptions: {
@@ -485,27 +1139,29 @@ export abstract class ToolCallingLoop<TOptions extends IToolCallingLoopOptions =
 					type: 'function',
 				})),
 			},
-			userInitiatedRequest: iterationNumber === 0 && !isContinuation && !this.options.request.subAgentInvocationId,
+			userInitiatedRequest: (iterationNumber === 0 && !isContinuation && !this.options.request.subAgentInvocationId) || this.stopHookUserInitiated,
 			disableThinking,
-		}, token);
+		}, token).finally(() => {
+			this.stopHookUserInitiated = false;
+		});
 
 		const promptTokenDetails = await computePromptTokenDetails({
 			messages: buildPromptResult.messages,
 			tokenizer,
 			tools: availableTools,
+			maxOutputTokens: endpoint.maxOutputTokens,
 		});
 		fetchStreamSource?.resolve();
-		let chatResult = await processResponsePromise ?? undefined;
+		const chatResult = await processResponsePromise ?? undefined;
 
-		// hydrate the token usage into the chat result as this renders the context window widget
-		if (fetchResult.type === ChatFetchResponseType.Success && fetchResult.usage) {
-			chatResult = {
-				...chatResult, usage: {
-					completionTokens: fetchResult.usage.completion_tokens,
-					promptTokens: fetchResult.usage.prompt_tokens,
-					promptTokenDetails,
-				}
-			};
+		// Report token usage to the stream for rendering the context window widget
+		const stream = streamParticipants[streamParticipants.length - 1];
+		if (fetchResult.type === ChatFetchResponseType.Success && fetchResult.usage && stream) {
+			stream.usage({
+				completionTokens: fetchResult.usage.completion_tokens,
+				promptTokens: fetchResult.usage.prompt_tokens,
+				promptTokenDetails,
+			});
 		}
 
 		// Validate authentication session upgrade and handle accordingly
@@ -534,6 +1190,21 @@ export abstract class ToolCallingLoop<TOptions extends IToolCallingLoopOptions =
 			}
 
 			thinkingItem?.updateWithFetchResult(fetchResult);
+
+			// Log the assistant message to the transcript
+			const transcriptToolRequests: ToolRequest[] = toolCalls.map(tc => ({
+				toolCallId: tc.id,
+				name: tc.name,
+				arguments: tc.arguments,
+				type: 'function' as const,
+			}));
+			this._sessionTranscriptService.logAssistantMessage(
+				this.options.conversation.sessionId,
+				fetchResult.value,
+				transcriptToolRequests,
+				thinkingItem ? (Array.isArray(thinkingItem.text) ? thinkingItem.text.join('') : thinkingItem.text) : undefined,
+			);
+
 			return {
 				response: fetchResult,
 				round: ToolCallRound.create({
@@ -544,6 +1215,7 @@ export abstract class ToolCallingLoop<TOptions extends IToolCallingLoopOptions =
 					thinking: thinkingItem,
 					phase,
 					phaseModelId: phase ? endpoint.model : undefined,
+					compaction,
 				}),
 				chatResult,
 				hadIgnoredFiles: buildPromptResult.hasIgnoredFiles,
@@ -570,9 +1242,9 @@ export abstract class ToolCallingLoop<TOptions extends IToolCallingLoopOptions =
 		return toolCallId + `__vscode-${ToolCallingLoop.NextToolCallId++}`;
 	}
 
-	private applyMessagePostProcessing(messages: Raw.ChatMessage[]): Raw.ChatMessage[] {
+	private applyMessagePostProcessing(messages: Raw.ChatMessage[], options?: { stripOrphanedToolCalls?: boolean }): Raw.ChatMessage[] {
 		return this.validateToolMessages(
-			ToolCallingLoop.stripInternalToolCallIds(messages));
+			ToolCallingLoop.stripInternalToolCallIds(messages), options);
 	}
 
 	public static stripInternalToolCallIds(messages: Raw.ChatMessage[]): Raw.ChatMessage[] {
@@ -623,12 +1295,22 @@ export abstract class ToolCallingLoop<TOptions extends IToolCallingLoopOptions =
 	}
 
 	/**
-	 * Apparently we can render prompts which have a tool message which is out of place. Don't know why this is happening, but try to detect this and fix it up.
+	 * Apparently we can render prompts which have a tool message which is out of place.
+	 * Don't know why this is happening, but try to detect this and fix it up.
+	 *
+	 * Validates tool messages in the conversation, ensuring:
+	 * 1. Tool result messages have a matching tool_call in the preceding assistant message
+	 * 2. (When stripOrphanedToolCalls is set) Every tool_call in an assistant message has
+	 *    a matching tool result message. This prevents errors with models like Gemini which
+	 *    strictly require 1:1 function_call ↔ function_response pairing.
+	 *
+	 * Returns the validated messages and an array of reasons for any corrections made.
 	 */
-	private validateToolMessages(messages: Raw.ChatMessage[]): Raw.ChatMessage[] {
+	public static validateToolMessagesCore(messages: Raw.ChatMessage[], options?: { stripOrphanedToolCalls?: boolean }): { messages: Raw.ChatMessage[]; filterReasons: string[]; strippedToolCallCount: number } {
 		const filterReasons: string[] = [];
+		let strippedToolCallCount = 0;
 		let previousAssistantMessage: Raw.AssistantChatMessage | undefined;
-		const filtered = messages.filter((m, i) => {
+		const filtered = messages.filter(m => {
 			if (m.role === Raw.ChatRole.Assistant) {
 				previousAssistantMessage = m;
 			} else if (m.role === Raw.ChatRole.Tool) {
@@ -654,42 +1336,69 @@ export abstract class ToolCallingLoop<TOptions extends IToolCallingLoopOptions =
 			return true;
 		});
 
-		if (filterReasons.length) {
-			const filterReasonsStr = filterReasons.join(', ');
+		// Second pass: strip tool_calls from assistant messages that lack matching tool result messages.
+		// This prevents sending orphaned tool_calls that would cause errors with models like Gemini
+		// which strictly require every function_call to have a corresponding function_response.
+		// Gated behind stripOrphanedToolCalls to limit scope to models that need it.
+		if (!options?.stripOrphanedToolCalls) {
+			return { messages: filtered, filterReasons, strippedToolCallCount };
+		}
+
+		for (let i = 0; i < filtered.length; i++) {
+			const m = filtered[i];
+			if (m.role !== Raw.ChatRole.Assistant || !m.toolCalls?.length) {
+				continue;
+			}
+
+			// Collect tool result IDs that follow this assistant message (up to the next assistant message)
+			const toolResultIds = new Set<string>();
+			for (let j = i + 1; j < filtered.length; j++) {
+				const next = filtered[j];
+				if (next.role === Raw.ChatRole.Assistant) {
+					break;
+				}
+				if (next.role === Raw.ChatRole.Tool && next.toolCallId) {
+					toolResultIds.add(next.toolCallId);
+				}
+			}
+
+			const orphanedToolCalls = m.toolCalls.filter(tc => !toolResultIds.has(tc.id));
+			if (orphanedToolCalls.length > 0) {
+				strippedToolCallCount += orphanedToolCalls.length;
+				const validToolCalls = m.toolCalls.filter(tc => toolResultIds.has(tc.id));
+				// Mutate in place — the assistant message was already shallow-copied by stripInternalToolCallIds
+				(m as Mutable<Raw.AssistantChatMessage>).toolCalls = validToolCalls.length > 0 ? validToolCalls : undefined;
+			}
+		}
+
+		return { messages: filtered, filterReasons, strippedToolCallCount };
+	}
+
+	private validateToolMessages(messages: Raw.ChatMessage[], options?: { stripOrphanedToolCalls?: boolean }): Raw.ChatMessage[] {
+		const { messages: filtered, filterReasons, strippedToolCallCount } = ToolCallingLoop.validateToolMessagesCore(messages, options);
+
+		if (filterReasons.length || strippedToolCallCount > 0) {
+			const allReasons = strippedToolCallCount > 0 ? [...filterReasons, `orphanedToolCalls:${strippedToolCallCount}`] : filterReasons;
+			const filterReasonsStr = allReasons.join(', ');
 			this._logService.warn('Filtered invalid tool messages: ' + filterReasonsStr);
 			/* __GDPR__
 					"toolCalling.invalidToolMessages" : {
 						"owner": "roblourens",
 						"comment": "Provides info about invalid tool messages that were rendered in a prompt",
-						"filterReasons": { "classification": "SystemMetaData", "purpose": "FeatureInsight", "comment": "Reasons for filtering the messages." },
-						"filterCount": { "classification": "SystemMetaData", "purpose": "FeatureInsight", "isMeasurement": true, "comment": "Count of filtered messages." }
+						"filterReasons": { "classification": "SystemMetaData", "purpose": "FeatureInsight", "comment": "Reasons for filtering the messages and stripping orphaned tool calls." },
+						"filterCount": { "classification": "SystemMetaData", "purpose": "FeatureInsight", "isMeasurement": true, "comment": "Count of filtered messages." },
+						"strippedToolCallCount": { "classification": "SystemMetaData", "purpose": "FeatureInsight", "isMeasurement": true, "comment": "Count of orphaned tool_calls stripped from assistant messages." }
 					}
 				*/
 			this._telemetryService.sendMSFTTelemetryEvent('toolCalling.invalidToolMessages', {
 				filterReasons: filterReasonsStr,
 			}, {
-				filterCount: filterReasons.length
+				filterCount: filterReasons.length,
+				strippedToolCallCount,
 			});
 		}
 
 		return filtered;
-	}
-
-	/**
-	 * Should be called between async operations. It cancels the operations and
-	 * returns true if the operation should be aborted, and waits for pausing otherwise.
-	 */
-	private async checkAsync(token: CancellationToken | PauseController): Promise<boolean> {
-		if (token instanceof PauseController && token.isPaused) {
-			await token.waitForUnpause();
-		}
-
-		if (token.isCancellationRequested) {
-			this.turn.setResponse(TurnStatus.Cancelled, undefined, undefined, CanceledResult);
-			return true;
-		}
-
-		return false;
 	}
 
 	private async buildPrompt2(buildPromptContext: IBuildPromptContext, stream: ChatResponseStream | undefined, token: CancellationToken): Promise<IBuildPromptResult> {

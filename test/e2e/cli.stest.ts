@@ -9,17 +9,20 @@ import * as fs from 'fs/promises';
 import * as http from 'http';
 import { platform, tmpdir } from 'os';
 import * as path from 'path';
-import type { ChatPromptReference } from 'vscode';
-import { ChatDelegationSummaryService, IChatDelegationSummaryService } from '../../src/extension/agents/copilotcli/common/delegationSummaryService';
-import { CopilotCLIAgents, CopilotCLIModels, CopilotCLISDK, CopilotCLISessionOptions, ICopilotCLIAgents, ICopilotCLIModels, ICopilotCLISDK } from '../../src/extension/agents/copilotcli/node/copilotCli';
-import { CopilotCLIImageSupport, ICopilotCLIImageSupport } from '../../src/extension/agents/copilotcli/node/copilotCLIImageSupport';
-import { CopilotCLIPromptResolver } from '../../src/extension/agents/copilotcli/node/copilotcliPromptResolver';
-import { ICopilotCLISession } from '../../src/extension/agents/copilotcli/node/copilotcliSession';
-import { CopilotCLISessionService, ICopilotCLISessionService } from '../../src/extension/agents/copilotcli/node/copilotcliSessionService';
-import { CopilotCLIMCPHandler, ICopilotCLIMCPHandler } from '../../src/extension/agents/copilotcli/node/mcpHandler';
-import { PermissionRequest } from '../../src/extension/agents/copilotcli/node/permissionHelpers';
+import type { ChatParticipantToolToken, ChatPromptReference } from 'vscode';
 import { OpenAIAdapterFactoryForSTests } from '../../src/extension/agents/node/adapters/openaiAdapterForSTests';
 import { ILanguageModelServer, ILanguageModelServerConfig, LanguageModelServer } from '../../src/extension/agents/node/langModelServer';
+import { ICustomSessionTitleService } from '../../src/extension/chatSessions/copilotcli/common/customSessionTitleService';
+import { ChatDelegationSummaryService, IChatDelegationSummaryService } from '../../src/extension/chatSessions/copilotcli/common/delegationSummaryService';
+import { CopilotCLIAgents, CopilotCLIModels, CopilotCLISDK, CopilotCLISessionOptions, ICopilotCLIAgents, ICopilotCLIModels, ICopilotCLISDK } from '../../src/extension/chatSessions/copilotcli/node/copilotCli';
+import { CopilotCLIImageSupport, ICopilotCLIImageSupport } from '../../src/extension/chatSessions/copilotcli/node/copilotCLIImageSupport';
+import { CopilotCLIPromptResolver } from '../../src/extension/chatSessions/copilotcli/node/copilotcliPromptResolver';
+import { ICopilotCLISession } from '../../src/extension/chatSessions/copilotcli/node/copilotcliSession';
+import { CopilotCLISessionService, ICopilotCLISessionService } from '../../src/extension/chatSessions/copilotcli/node/copilotcliSessionService';
+import { CustomSessionTitleService } from '../../src/extension/chatSessions/copilotcli/node/customSessionTitleServiceImpl';
+import { CopilotCLIMCPHandler, ICopilotCLIMCPHandler } from '../../src/extension/chatSessions/copilotcli/node/mcpHandler';
+import { PermissionRequest } from '../../src/extension/chatSessions/copilotcli/node/permissionHelpers';
+import { IUserQuestionHandler, UserInputRequest, UserInputResponse } from '../../src/extension/chatSessions/copilotcli/node/userInputHelpers';
 import { ChatSummarizerProvider } from '../../src/extension/prompt/node/summarizer';
 import { MockChatResponseStream, TestChatRequest } from '../../src/extension/test/node/testHelpers';
 import { IEndpointProvider } from '../../src/platform/endpoint/common/endpointProvider';
@@ -39,8 +42,12 @@ import { Mutable } from '../../src/util/vs/base/common/types';
 import { URI } from '../../src/util/vs/base/common/uri';
 import { SyncDescriptor } from '../../src/util/vs/platform/instantiation/common/descriptors';
 import { IInstantiationService } from '../../src/util/vs/platform/instantiation/common/instantiation';
-import { ChatRequest, ChatSessionStatus, Diagnostic, DiagnosticSeverity, Location, Range, Uri } from '../../src/vscodeTypes';
+import { ChatRequest, ChatSessionStatus, ChatToolInvocationPart, Diagnostic, DiagnosticSeverity, Location, Range, Uri } from '../../src/vscodeTypes';
 import { ssuite, stest } from '../base/stest';
+
+interface ChatToolResourcesInvocationData {
+	values: Array<Uri | Location>;
+}
 
 const keys = ['COPILOT_ENABLE_ALT_PROVIDERS', 'COPILOT_AGENT_MODEL', 'GH_TOKEN', 'COPILOT_API_URL', 'GITHUB_COPILOT_API_TOKEN'];
 const originalValues: Record<string, string | undefined> = {};
@@ -69,7 +76,7 @@ function restoreEnvVariablesAfterTests() {
 	}
 }
 
-function registerChatServices(testingServiceCollection: TestingServiceCollection) {
+async function registerChatServices(testingServiceCollection: TestingServiceCollection) {
 	const ITestSessionOptionsProvider = createServiceIdentifier<TestSessionOptionsProvider>('ITestSessionOptionsProvider');
 	class TestSessionOptionsProvider {
 		declare _serviceBrand: undefined;
@@ -184,6 +191,16 @@ function registerChatServices(testingServiceCollection: TestingServiceCollection
 		}
 	}
 
+	class UserQuestionHandler implements IUserQuestionHandler {
+		declare _serviceBrand: undefined;
+		constructor(
+		) {
+		}
+		async askUserQuestion(question: UserInputRequest, toolInvocationToken: ChatParticipantToolToken, token: CancellationToken): Promise<UserInputResponse | undefined> {
+			return undefined;
+		}
+	}
+
 	class TestCopilotCLISessionService extends CopilotCLISessionService {
 		override async monitorSessionFiles() {
 			// Override to do nothing in tests
@@ -207,10 +224,12 @@ function registerChatServices(testingServiceCollection: TestingServiceCollection
 	testingServiceCollection.define(ICopilotCLIModels, new SyncDescriptor(CopilotCLIModels));
 	testingServiceCollection.define(ICopilotCLISDK, new SyncDescriptor(TestCopilotCLISDK));
 	testingServiceCollection.define(ICopilotCLIAgents, new SyncDescriptor(CopilotCLIAgents));
+	testingServiceCollection.define(ICustomSessionTitleService, new SyncDescriptor(CustomSessionTitleService));
 	testingServiceCollection.define(ICopilotCLIMCPHandler, new SyncDescriptor(CopilotCLIMCPHandler));
 	testingServiceCollection.define(IMcpService, new SyncDescriptor(NullMcpService));
 	testingServiceCollection.define(IFileSystemService, new SyncDescriptor(NodeFileSystemService));
 	testingServiceCollection.define(ICopilotCLIImageSupport, new SyncDescriptor(CopilotCLIImageSupport));
+	testingServiceCollection.define(IUserQuestionHandler, new SyncDescriptor(UserQuestionHandler));
 	testingServiceCollection.define(IChatDelegationSummaryService, delegatingSummarizerProvider);
 	const simulationWorkspace = new SimulationWorkspace();
 	simulationWorkspace.setupServices(testingServiceCollection);
@@ -321,7 +340,8 @@ function registerChatServices(testingServiceCollection: TestingServiceCollection
 
 			await populateWorkspaceFiles(workingDirectory.fsPath);
 			await sdk.getPackage();
-		}
+		},
+		authInfo: await sdk.getAuthInfo()
 	};
 }
 
@@ -329,7 +349,7 @@ const vscCopilotRoot = path.join(__dirname, '..');
 // NOTE: Ensure all files/folders/workingDirectories are under test/scenarios/test-cli for path replacements to work correctly.
 const sourcePath = path.join(__dirname, '..', 'test', 'scenarios', 'test-cli');
 let tmpDirCounter = 0;
-function testRunner(cb: (services: { sessionService: ICopilotCLISessionService; promptResolver: CopilotCLIPromptResolver; init: (workingDirectory: URI) => Promise<void> }, scenariosPath: string, stream: MockChatResponseStream, disposables: DisposableStore) => Promise<void>) {
+function testRunner(cb: (services: { sessionService: ICopilotCLISessionService; promptResolver: CopilotCLIPromptResolver; init: (workingDirectory: URI) => Promise<void>; authInfo: NonNullable<SessionOptions['authInfo']> }, scenariosPath: string, toolInvocations: ChatToolInvocationPart[], stream: MockChatResponseStream, disposables: DisposableStore) => Promise<void>) {
 	return async (testingServiceCollection: TestingServiceCollection) => {
 		trackEnvVariablesBeforeTests();
 		const disposables = new DisposableStore();
@@ -339,11 +359,15 @@ function testRunner(cb: (services: { sessionService: ICopilotCLISessionService; 
 		await fs.rm(scenariosPath, { recursive: true, force: true }).catch(() => { /* Ignore */ });
 		await fs.mkdir(scenariosPath, { recursive: true });
 		await fs.cp(sourcePath, scenariosPath, { recursive: true, force: true, errorOnExist: false });
+		const toolInvocations: ChatToolInvocationPart[] = [];
 		try {
-			const services = registerChatServices(testingServiceCollection);
-			const stream = new MockChatResponseStream();
-
-			await cb(services, await fs.realpath(scenariosPath), stream, disposables);
+			const services = await registerChatServices(testingServiceCollection);
+			const stream = new MockChatResponseStream((part) => {
+				if (part instanceof ChatToolInvocationPart) {
+					toolInvocations.push(part);
+				}
+			});
+			await cb(services, await fs.realpath(scenariosPath), toolInvocations, stream, disposables);
 		} finally {
 			await fs.rm(scenariosPath, { recursive: true }).catch(() => { /* Ignore */ });
 			restoreEnvVariablesAfterTests();
@@ -377,16 +401,32 @@ async function assertFileNotContains(filePath: string, expectedContent: string) 
 	assert.ok(!fileContent.includes(expectedContent), `Expected not to contain "${expectedContent}", contents = ${fileContent}`);
 }
 
+function getToolInvocationsByName(toolInvocations: ChatToolInvocationPart[], toolName: string): ChatToolInvocationPart[] {
+	return toolInvocations.filter(t => t.toolName.toLocaleLowerCase() === toolName.toLocaleLowerCase());
+}
+
+function assertToolInvocationHasFiles(invocation: ChatToolInvocationPart, expectedFileCount: number, message?: string) {
+	const data = invocation.toolSpecificData as ChatToolResourcesInvocationData | undefined;
+	assert.ok(data, message ?? 'Expected toolSpecificData to exist');
+	assert.ok(data.values, message ?? 'Expected toolSpecificData.values to exist');
+	assert.strictEqual(data.values.length, expectedFileCount, message ?? `Expected ${expectedFileCount} files, got ${data.values.length}`);
+}
+
+function assertToolInvocationMessageContains(invocation: ChatToolInvocationPart, expectedPattern: string, message?: string) {
+	const pastTenseMessage = typeof invocation.pastTenseMessage === 'string' ? invocation.pastTenseMessage : invocation.pastTenseMessage?.value;
+	assert.ok(pastTenseMessage?.includes(expectedPattern), message ?? `Expected pastTenseMessage to contain "${expectedPattern}", got "${pastTenseMessage}"`);
+}
+
 ssuite.skip({ title: '@cli', location: 'external' }, async (_) => {
 	stest({ description: 'can start a session' },
-		testRunner(async ({ sessionService, init }, scenariosPath, stream, disposables) => {
+		testRunner(async ({ sessionService, init, authInfo }, scenariosPath, toolInvocations, stream, disposables) => {
 			const workingDirectory = URI.file(path.join(scenariosPath, 'wkspc1'));
 			await init(workingDirectory);
 			const session = await sessionService.createSession({ workingDirectory }, CancellationToken.None);
 			disposables.add(session);
 			disposables.add(session.object.attachStream(stream));
 
-			await session.object.handleRequest('', 'What is 1+8?', [], undefined, CancellationToken.None);
+			await session.object.handleRequest({ id: '', toolInvocationToken: undefined as never }, { prompt: 'What is 1+8?' }, [], undefined, authInfo, CancellationToken.None);
 
 			// Verify we have a response of 9.
 			assert.strictEqual(session.object.status, ChatSessionStatus.Completed);
@@ -394,16 +434,14 @@ ssuite.skip({ title: '@cli', location: 'external' }, async (_) => {
 			assertStreamContains(stream, '9');
 
 			// Can send a subsequent request.
-			await session.object.handleRequest('', 'What is 11+25?', [], undefined, CancellationToken.None);
+			await session.object.handleRequest({ id: '', toolInvocationToken: undefined as never }, { prompt: 'What is 11+25?' }, [], undefined, authInfo, CancellationToken.None);
 			// Verify we have a response of 36.
-			assert.strictEqual(session.object.status, ChatSessionStatus.Completed);
-			assertNoErrorsInStream(stream);
 			assertStreamContains(stream, '36');
 		})
 	);
 
 	stest({ description: 'can resume a session' },
-		testRunner(async ({ sessionService, init }, scenariosPath, stream, disposables) => {
+		testRunner(async ({ sessionService, init, authInfo }, scenariosPath, toolInvocations, stream, disposables) => {
 			const workingDirectory = URI.file(path.join(scenariosPath, 'wkspc1'));
 			await init(workingDirectory);
 
@@ -413,7 +451,7 @@ ssuite.skip({ title: '@cli', location: 'external' }, async (_) => {
 				const session = await sessionService.createSession({ workingDirectory }, CancellationToken.None);
 				sessionId = session.object.sessionId;
 
-				await session.object.handleRequest('', 'What is 1+8?', [], undefined, CancellationToken.None);
+				await session.object.handleRequest({ id: '', toolInvocationToken: undefined as never }, { prompt: 'What is 1+8?' }, [], undefined, authInfo, CancellationToken.None);
 				session.dispose();
 			}
 
@@ -433,7 +471,7 @@ ssuite.skip({ title: '@cli', location: 'external' }, async (_) => {
 				disposables.add(session);
 				disposables.add(session.object.attachStream(stream));
 
-				await session.object.handleRequest('', 'What was my previous question?', [], undefined, CancellationToken.None);
+				await session.object.handleRequest({ id: '', toolInvocationToken: undefined as never }, { prompt: 'What was my previous question?' }, [], undefined, authInfo, CancellationToken.None);
 
 				// Verify we have a response of 9.
 				assert.strictEqual(session.object.status, ChatSessionStatus.Completed);
@@ -443,7 +481,7 @@ ssuite.skip({ title: '@cli', location: 'external' }, async (_) => {
 		})
 	);
 	stest({ description: 'can read file without permission' },
-		testRunner(async ({ sessionService, init }, scenariosPath, stream, disposables) => {
+		testRunner(async ({ sessionService, init, authInfo }, scenariosPath, toolInvocations, stream, disposables) => {
 			const workingDirectory = URI.file(path.join(scenariosPath, 'wkspc1'));
 			await init(workingDirectory);
 			const file = URI.joinPath(workingDirectory, 'sample.js');
@@ -452,7 +490,7 @@ ssuite.skip({ title: '@cli', location: 'external' }, async (_) => {
 			disposables.add(session);
 			disposables.add(session.object.attachStream(stream));
 
-			await session.object.handleRequest('', prompt, [], undefined, CancellationToken.None);
+			await session.object.handleRequest({ id: '', toolInvocationToken: undefined as never }, { prompt }, [], undefined, authInfo, CancellationToken.None);
 
 			assert.strictEqual(session.object.status, ChatSessionStatus.Completed);
 			assertNoErrorsInStream(stream);
@@ -460,7 +498,7 @@ ssuite.skip({ title: '@cli', location: 'external' }, async (_) => {
 		})
 	);
 	stest({ description: 'request permission when reading file outside workspace' },
-		testRunner(async ({ sessionService, init }, scenariosPath, stream, disposables) => {
+		testRunner(async ({ sessionService, init, authInfo }, scenariosPath, toolInvocations, stream, disposables) => {
 			const workingDirectory = URI.file(path.join(scenariosPath, 'wkspc1'));
 			await init(workingDirectory);
 
@@ -483,7 +521,7 @@ ssuite.skip({ title: '@cli', location: 'external' }, async (_) => {
 				}
 			}));
 
-			await session.object.handleRequest('', prompt, [], undefined, CancellationToken.None);
+			await session.object.handleRequest({ id: '', toolInvocationToken: undefined as never }, { prompt }, [], undefined, authInfo, CancellationToken.None);
 
 			assert.strictEqual(session.object.status, ChatSessionStatus.Completed);
 			assertNoErrorsInStream(stream);
@@ -492,7 +530,7 @@ ssuite.skip({ title: '@cli', location: 'external' }, async (_) => {
 		})
 	);
 	stest({ description: 'can read attachment without permission' },
-		testRunner(async ({ sessionService, promptResolver, init }, scenariosPath, stream, disposables) => {
+		testRunner(async ({ sessionService, promptResolver, init, authInfo }, scenariosPath, toolInvocations, stream, disposables) => {
 			const workingDirectory = URI.file(path.join(scenariosPath, 'wkspc1'));
 			await init(workingDirectory);
 			const file = URI.joinPath(workingDirectory, 'sample.js').fsPath;
@@ -506,7 +544,7 @@ ssuite.skip({ title: '@cli', location: 'external' }, async (_) => {
 			disposables.add(session);
 			disposables.add(session.object.attachStream(stream));
 
-			await session.object.handleRequest('', prompt, attachments, undefined, CancellationToken.None);
+			await session.object.handleRequest({ id: '', toolInvocationToken: undefined as never }, { prompt }, attachments, undefined, authInfo, CancellationToken.None);
 
 			assert.strictEqual(session.object.status, ChatSessionStatus.Completed);
 			assertNoErrorsInStream(stream);
@@ -514,7 +552,7 @@ ssuite.skip({ title: '@cli', location: 'external' }, async (_) => {
 		})
 	);
 	stest({ description: 'can edit file' },
-		testRunner(async ({ sessionService, promptResolver, init }, scenariosPath, stream, disposables) => {
+		testRunner(async ({ sessionService, promptResolver, init, authInfo }, scenariosPath, toolInvocations, stream, disposables) => {
 			const workingDirectory = URI.file(path.join(scenariosPath, 'wkspc1'));
 			await init(workingDirectory);
 			const file = URI.joinPath(workingDirectory, 'sample.js').fsPath;
@@ -528,7 +566,7 @@ ssuite.skip({ title: '@cli', location: 'external' }, async (_) => {
 			disposables.add(session);
 			disposables.add(session.object.attachStream(stream));
 
-			await session.object.handleRequest('', prompt, attachments, undefined, CancellationToken.None);
+			await session.object.handleRequest({ id: '', toolInvocationToken: undefined as never }, { prompt }, attachments, undefined, authInfo, CancellationToken.None);
 
 			assert.strictEqual(session.object.status, ChatSessionStatus.Completed);
 			assertNoErrorsInStream(stream);
@@ -542,7 +580,7 @@ ssuite.skip({ title: '@cli', location: 'external' }, async (_) => {
 				[],
 				promptResolver
 			));
-			await session.object.handleRequest('', prompt, attachments, undefined, CancellationToken.None);
+			await session.object.handleRequest({ id: '', toolInvocationToken: undefined as never }, { prompt }, attachments, undefined, authInfo, CancellationToken.None);
 
 			assert.strictEqual(session.object.status, ChatSessionStatus.Completed);
 			assertNoErrorsInStream(stream);
@@ -553,7 +591,7 @@ ssuite.skip({ title: '@cli', location: 'external' }, async (_) => {
 		})
 	);
 	stest({ description: 'explain selection' },
-		testRunner(async ({ sessionService, promptResolver, init }, scenariosPath, stream, disposables) => {
+		testRunner(async ({ sessionService, promptResolver, init, authInfo }, scenariosPath, toolInvocations, stream, disposables) => {
 			const workingDirectory = URI.file(path.join(scenariosPath, 'wkspc1'));
 			await init(workingDirectory);
 			const file = URI.joinPath(workingDirectory, 'utils.js').fsPath;
@@ -568,14 +606,14 @@ ssuite.skip({ title: '@cli', location: 'external' }, async (_) => {
 			disposables.add(session);
 			disposables.add(session.object.attachStream(stream));
 
-			await session.object.handleRequest('', prompt, attachments, undefined, CancellationToken.None);
+			await session.object.handleRequest({ id: '', toolInvocationToken: undefined as never }, { prompt }, attachments, undefined, authInfo, CancellationToken.None);
 
 			assert.strictEqual(session.object.status, ChatSessionStatus.Completed);
 			assertStreamContains(stream, 'throw');
 		})
 	);
 	stest({ description: 'can create a file' },
-		testRunner(async ({ sessionService, promptResolver, init }, scenariosPath, stream, disposables) => {
+		testRunner(async ({ sessionService, promptResolver, init, authInfo }, scenariosPath, toolInvocations, stream, disposables) => {
 			const workingDirectory = URI.file(path.join(scenariosPath, 'wkspc1'));
 			await init(workingDirectory);
 			const { prompt, attachments } = await resolvePromptWithFileReferences(
@@ -588,7 +626,7 @@ ssuite.skip({ title: '@cli', location: 'external' }, async (_) => {
 			disposables.add(session);
 			disposables.add(session.object.attachStream(stream));
 
-			await session.object.handleRequest('', prompt, attachments, undefined, CancellationToken.None);
+			await session.object.handleRequest({ id: '', toolInvocationToken: undefined as never }, { prompt }, attachments, undefined, authInfo, CancellationToken.None);
 
 			assert.strictEqual(session.object.status, ChatSessionStatus.Completed);
 			assertNoErrorsInStream(stream);
@@ -596,7 +634,7 @@ ssuite.skip({ title: '@cli', location: 'external' }, async (_) => {
 		})
 	);
 	stest({ description: 'can list files in directory' },
-		testRunner(async ({ sessionService, promptResolver, init }, scenariosPath, stream, disposables) => {
+		testRunner(async ({ sessionService, promptResolver, init, authInfo }, scenariosPath, toolInvocations, stream, disposables) => {
 			const workingDirectory = URI.file(path.join(scenariosPath, 'wkspc1'));
 			await init(workingDirectory);
 			const { prompt, attachments } = await resolvePromptWithFileReferences(
@@ -609,7 +647,7 @@ ssuite.skip({ title: '@cli', location: 'external' }, async (_) => {
 			disposables.add(session);
 			disposables.add(session.object.attachStream(stream));
 
-			await session.object.handleRequest('', prompt, attachments, undefined, CancellationToken.None);
+			await session.object.handleRequest({ id: '', toolInvocationToken: undefined as never }, { prompt }, attachments, undefined, authInfo, CancellationToken.None);
 
 			assert.strictEqual(session.object.status, ChatSessionStatus.Completed);
 			assertNoErrorsInStream(stream);
@@ -620,7 +658,7 @@ ssuite.skip({ title: '@cli', location: 'external' }, async (_) => {
 		})
 	);
 	stest({ description: 'can fix problems' },
-		testRunner(async ({ sessionService, promptResolver, init }, scenariosPath, stream, disposables) => {
+		testRunner(async ({ sessionService, promptResolver, init, authInfo }, scenariosPath, toolInvocations, stream, disposables) => {
 			const workingDirectory = URI.file(path.join(scenariosPath, 'wkspc1'));
 			await init(workingDirectory);
 			const file = URI.joinPath(workingDirectory, 'stringUtils.js').fsPath;
@@ -636,7 +674,7 @@ ssuite.skip({ title: '@cli', location: 'external' }, async (_) => {
 			disposables.add(session);
 			disposables.add(session.object.attachStream(stream));
 
-			await session.object.handleRequest('', prompt, attachments, undefined, CancellationToken.None);
+			await session.object.handleRequest({ id: '', toolInvocationToken: undefined as never }, { prompt }, attachments, undefined, authInfo, CancellationToken.None);
 
 			assert.strictEqual(session.object.status, ChatSessionStatus.Completed);
 			assertNoErrorsInStream(stream);
@@ -646,7 +684,7 @@ ssuite.skip({ title: '@cli', location: 'external' }, async (_) => {
 	);
 
 	stest({ description: 'can fix multiple problems in multiple files' },
-		testRunner(async ({ sessionService, promptResolver, init }, scenariosPath, stream, disposables) => {
+		testRunner(async ({ sessionService, promptResolver, init, authInfo }, scenariosPath, toolInvocations, stream, disposables) => {
 			const workingDirectory = URI.file(path.join(scenariosPath, 'wkspc1'));
 			await init(workingDirectory);
 			const tsFile = URI.joinPath(workingDirectory, 'stringUtils.js').fsPath;
@@ -664,7 +702,7 @@ ssuite.skip({ title: '@cli', location: 'external' }, async (_) => {
 			disposables.add(session);
 			disposables.add(session.object.attachStream(stream));
 
-			await session.object.handleRequest('', prompt, attachments, undefined, CancellationToken.None);
+			await session.object.handleRequest({ id: '', toolInvocationToken: undefined as never }, { prompt }, attachments, undefined, authInfo, CancellationToken.None);
 
 			assert.strictEqual(session.object.status, ChatSessionStatus.Completed);
 			const tsContents = await fs.readFile(tsFile, 'utf-8');
@@ -675,7 +713,7 @@ ssuite.skip({ title: '@cli', location: 'external' }, async (_) => {
 	);
 
 	stest({ description: 'can run terminal commands' },
-		testRunner(async ({ sessionService, promptResolver, init }, scenariosPath, stream, disposables) => {
+		testRunner(async ({ sessionService, promptResolver, init, authInfo }, scenariosPath, toolInvocations, stream, disposables) => {
 			const workingDirectory = URI.file(path.join(scenariosPath, 'wkspc1'));
 			await init(workingDirectory);
 
@@ -698,11 +736,126 @@ ssuite.skip({ title: '@cli', location: 'external' }, async (_) => {
 				}
 			}));
 
-			await session.object.handleRequest('', prompt, attachments, undefined, CancellationToken.None);
+			await session.object.handleRequest({ id: '', toolInvocationToken: undefined as never }, { prompt }, attachments, undefined, authInfo, CancellationToken.None);
 
 			assertNoErrorsInStream(stream);
 			assert.strictEqual(session.object.status, ChatSessionStatus.Completed);
 			assertStreamContains(stream, 'wkspc1');
+		})
+	);
+
+	stest({ description: 'glob tool returns files with correct toolSpecificData' },
+		testRunner(async ({ sessionService, promptResolver, init, authInfo }, scenariosPath, toolInvocations, stream, disposables) => {
+			const workingDirectory = URI.file(path.join(scenariosPath, 'wkspc1'));
+			await init(workingDirectory);
+			const { prompt, attachments } = await resolvePromptWithFileReferences(
+				`Use the glob tool to find all JavaScript files (*.js) in the current directory. Do not use any other search tools.`,
+				[],
+				promptResolver
+			);
+
+			const session = await sessionService.createSession({ workingDirectory }, CancellationToken.None);
+			disposables.add(session);
+			disposables.add(session.object.attachStream(stream));
+
+			await session.object.handleRequest({ id: '', toolInvocationToken: undefined as never }, { prompt }, attachments, undefined, authInfo, CancellationToken.None);
+
+			assert.strictEqual(session.object.status, ChatSessionStatus.Completed);
+			assertNoErrorsInStream(stream);
+
+			const globInvocations = getToolInvocationsByName(toolInvocations, 'search');
+			assert.ok(globInvocations.length > 0, 'Expected at least one glob tool invocation');
+			const invocation = globInvocations[globInvocations.length - 1];
+			// wkspc1 has sample.js, utils.js, stringUtils.js
+			assertToolInvocationHasFiles(invocation, 3);
+			assertToolInvocationMessageContains(invocation, '3 result');
+		})
+	);
+
+	stest({ description: 'glob tool with no matches has empty toolSpecificData' },
+		testRunner(async ({ sessionService, promptResolver, init, authInfo }, scenariosPath, toolInvocations, stream, disposables) => {
+			const workingDirectory = URI.file(path.join(scenariosPath, 'wkspc1'));
+			await init(workingDirectory);
+			const { prompt, attachments } = await resolvePromptWithFileReferences(
+				`Use the glob tool to find all files matching *.xyz in the current directory. Do not use any other search tools.`,
+				[],
+				promptResolver
+			);
+
+			const session = await sessionService.createSession({ workingDirectory }, CancellationToken.None);
+			disposables.add(session);
+			disposables.add(session.object.attachStream(stream));
+
+			await session.object.handleRequest({ id: '', toolInvocationToken: undefined as never }, { prompt }, attachments, undefined, authInfo, CancellationToken.None);
+
+			assert.strictEqual(session.object.status, ChatSessionStatus.Completed);
+			assertNoErrorsInStream(stream);
+
+			const globInvocations = getToolInvocationsByName(toolInvocations, 'search');
+			assert.ok(globInvocations.length > 0, 'Expected at least one glob tool invocation');
+			const invocation = globInvocations[globInvocations.length - 1];
+			assertToolInvocationHasFiles(invocation, 0);
+			// When no results, the message ends with '.' (no result count)
+			const pastTenseMessage = typeof invocation.pastTenseMessage === 'string' ? invocation.pastTenseMessage : invocation.pastTenseMessage?.value;
+			assert.ok(pastTenseMessage?.endsWith('.'), `Expected pastTenseMessage to end with '.', got "${pastTenseMessage}"`);
+		})
+	);
+
+	stest({ description: 'grep tool returns files with correct toolSpecificData' },
+		testRunner(async ({ sessionService, promptResolver, init, authInfo }, scenariosPath, toolInvocations, stream, disposables) => {
+			const workingDirectory = URI.file(path.join(scenariosPath, 'wkspc1'));
+			await init(workingDirectory);
+			const { prompt, attachments } = await resolvePromptWithFileReferences(
+				`Use the grep tool to search for the word 'function' in the current directory. Do not use any other search tools.`,
+				[],
+				promptResolver
+			);
+
+			const session = await sessionService.createSession({ workingDirectory }, CancellationToken.None);
+			disposables.add(session);
+			disposables.add(session.object.attachStream(stream));
+
+			await session.object.handleRequest({ id: '', toolInvocationToken: undefined as never }, { prompt }, attachments, undefined, authInfo, CancellationToken.None);
+
+			assert.strictEqual(session.object.status, ChatSessionStatus.Completed);
+			assertNoErrorsInStream(stream);
+
+			const grepInvocations = getToolInvocationsByName(toolInvocations, 'search');
+			assert.ok(grepInvocations.length > 0, 'Expected at least one grep tool invocation');
+			const invocation = grepInvocations[grepInvocations.length - 1];
+			// All JS files in wkspc1 contain 'function': sample.js, utils.js, stringUtils.js
+			const data = invocation.toolSpecificData as ChatToolResourcesInvocationData | undefined;
+			assert.ok(data && data.values && data.values.length > 0, 'Expected grep to find matching files');
+			assertToolInvocationMessageContains(invocation, 'result');
+		})
+	);
+
+	stest({ description: 'grep tool with no matches has empty toolSpecificData' },
+		testRunner(async ({ sessionService, promptResolver, init, authInfo }, scenariosPath, toolInvocations, stream, disposables) => {
+			const workingDirectory = URI.file(path.join(scenariosPath, 'wkspc1'));
+			await init(workingDirectory);
+			const { prompt, attachments } = await resolvePromptWithFileReferences(
+				`Use the grep tool to search for the pattern 'xyzNonExistentPattern123' in the current directory. Do not use any other search tools.`,
+				[],
+				promptResolver
+			);
+
+			const session = await sessionService.createSession({ workingDirectory }, CancellationToken.None);
+			disposables.add(session);
+			disposables.add(session.object.attachStream(stream));
+
+			await session.object.handleRequest({ id: '', toolInvocationToken: undefined as never }, { prompt }, attachments, undefined, authInfo, CancellationToken.None);
+
+			assert.strictEqual(session.object.status, ChatSessionStatus.Completed);
+			assertNoErrorsInStream(stream);
+
+			const grepInvocations = getToolInvocationsByName(toolInvocations, 'search');
+			assert.ok(grepInvocations.length > 0, 'Expected at least one grep tool invocation');
+			const invocation = grepInvocations[grepInvocations.length - 1];
+			assertToolInvocationHasFiles(invocation, 0);
+			// When no results, the message ends with '.' (no result count)
+			const pastTenseMessage = typeof invocation.pastTenseMessage === 'string' ? invocation.pastTenseMessage : invocation.pastTenseMessage?.value;
+			assert.ok(pastTenseMessage?.endsWith('.'), `Expected pastTenseMessage to end with '.', got "${pastTenseMessage}"`);
 		})
 	);
 });
