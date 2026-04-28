@@ -25,10 +25,6 @@ import { ProjectLabels } from '../panel/projectLabels';
 import { LanguageServerContextPrompt } from './languageServerContextPrompt';
 import { SummarizedDocumentSplit } from './promptingSummarizedDocument';
 
-// --- Start Positron ---
-import { PositronAssistant } from '../base/positronAssistant.jsx';
-// --- End Positron ---
-
 export interface InlineChatGenerateCodePromptProps extends GenericInlinePromptProps {
 }
 
@@ -84,7 +80,6 @@ export class InlineChatGenerateCodePrompt extends PromptElement<InlineChatGenera
 					You are a world class expert in programming, and especially good at {languageId}.<br />
 					<LegacySafetyRules />
 				</SystemMessage >
-				<PositronAssistant promptContext={this.props.promptContext} />
 				<HistoryWithInstructions inline={true} historyPriority={700} history={history} passPriority>
 					<InstructionMessage priority={1000}>
 						Source code is always contained in ``` blocks.<br />

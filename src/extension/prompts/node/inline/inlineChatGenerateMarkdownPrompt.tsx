@@ -22,10 +22,6 @@ import { CustomInstructions } from '../panel/customInstructions';
 import { SafePromptElement } from '../panel/safeElements';
 import { SummarizedDocumentSplit } from './promptingSummarizedDocument';
 
-// --- Start Positron ---
-import { PositronAssistant } from '../base/positronAssistant.jsx';
-// --- End Positron ---
-
 export interface InlineChatGenerateMarkdownPromptProps extends GenericInlinePromptProps {
 }
 
@@ -84,7 +80,6 @@ export class InlineChatGenerateMarkdownPrompt extends PromptElement<InlineChatGe
 					You are a world class markdown editor, very well versed in programming.<br />
 					<LegacySafetyRules />
 				</SystemMessage>
-				<PositronAssistant promptContext={this.props.promptContext} />
 				<HistoryWithInstructions inline={true} historyPriority={700} passPriority history={history}>
 					<InstructionMessage priority={1000}>
 						The user needs help to write some new markdown.<br />

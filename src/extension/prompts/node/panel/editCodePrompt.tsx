@@ -42,10 +42,6 @@ import { ProjectLabels } from './projectLabels';
 import { CodeBlock, ExampleCodeBlock } from './safeElements';
 import { ChatToolCalls } from './toolCalling';
 
-// --- Start Positron ---
-import { PositronAssistant } from '../base/positronAssistant.jsx';
-// --- End Positron ---
-
 export interface EditCodePromptProps extends GenericBasePromptElementProps {
 	readonly promptContext: IEditStepBuildPromptContext;
 	readonly endpoint: IChatEndpoint;
@@ -123,7 +119,6 @@ export class EditCodePrompt extends PromptElement<EditCodePromptProps> {
 					<CopilotIdentityRules />
 					<LegacySafetyRules />
 				</SystemMessage>
-				<PositronAssistant promptContext={this.props.promptContext} />
 				{instructionsAfterHistory ? undefined : instructions}
 				<EditCodeConversationHistory flexGrow={1} priority={700} workingSet={this.props.promptContext.workingSet} history={this.props.promptContext.history} promptInstructions={this.props.promptContext.promptInstructions} chatVariables={this.props.promptContext.chatVariables} />
 				{instructionsAfterHistory ? instructions : undefined}

@@ -36,10 +36,6 @@ export class DocumentToAstSelectionData extends TelemetryData {
 	}
 }
 
-// --- Start Positron ---
-import { PositronAssistant } from '../base/positronAssistant.jsx';
-// --- End Positron ---
-
 export interface InlineChatEditCodePromptProps extends GenericInlinePromptProps {
 	readonly ignoreCustomInstructions?: boolean;
 }
@@ -95,7 +91,6 @@ export class InlineChatEditCodePrompt extends PromptElement<InlineChatEditCodePr
 					You are a world class expert in programming, and especially good at {languageId}.<br />
 					<LegacySafetyRules />
 				</SystemMessage>
-				<PositronAssistant promptContext={this.props.promptContext} />
 				<HistoryWithInstructions inline={true} historyPriority={700} passPriority history={history}>
 					<InstructionMessage priority={1000}>
 						Source code is always contained in ``` blocks.<br />

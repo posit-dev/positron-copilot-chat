@@ -122,7 +122,7 @@ export interface IConfigurationService {
 
 	/**
 	 * Gets an observable for a configuration value that is not in the Copilot namespace.
-	 * @param configKey The fully qualified config key to look up (e.g., 'positron.assistant.inlineCompletions.enable')
+	 * @param configKey The fully qualified config key to look up
 	 * @param defaultValue The default value to use if the config is not set
 	 */
 	getNonExtensionConfigObservable<T>(configKey: string, defaultValue: T): IObservable<T>;
