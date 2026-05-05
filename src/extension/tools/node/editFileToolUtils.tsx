@@ -17,6 +17,7 @@ import { IFileSystemService } from '../../../platform/filesystem/common/fileSyst
 import { ILogService } from '../../../platform/log/common/logService';
 import { IAlternativeNotebookContentService } from '../../../platform/notebook/common/alternativeContent';
 import { INotebookService } from '../../../platform/notebook/common/notebookService';
+import { IPromptPathRepresentationService } from '../../../platform/prompts/common/promptPathRepresentationService';
 import { IWorkspaceService } from '../../../platform/workspace/common/workspaceService';
 import { getLanguageId } from '../../../util/common/markdown';
 import { findNotebook } from '../../../util/common/notebooks';
@@ -794,12 +795,33 @@ export const enum ConfirmationCheckResult {
 	OutsideWorkspace,
 }
 
+
 /**
  * Returns a function that returns whether a URI is approved for editing without
  * further user confirmation.
  */
-export function makeUriConfirmationChecker(configuration: IConfigurationService, workspaceService: IWorkspaceService, customInstructionsService: ICustomInstructionsService) {
+export function makeUriConfirmationChecker(configuration: IConfigurationService, getWorkspaceFolder: (resource: URI) => URI | undefined, customInstructionsService: ICustomInstructionsService) {
 	const patterns = configuration.getNonExtensionConfig<Record<string, boolean>>('chat.tools.edits.autoApprove');
+	const hookFilesLocations = configuration.getNonExtensionConfig<Record<string, boolean>>('chat.hookFilesLocations');
+
+	// Convert hook files locations to require confirmation (isApproved: false)
+	const hookFilesPatterns: Record<string, boolean> = {};
+	if (hookFilesLocations) {
+		for (const pattern of Object.keys(hookFilesLocations)) {
+			// Skip home directory patterns as they are handled separately
+			if (!pattern.startsWith('~/')) {
+				// Ensure patterns have proper glob prefix to match within workspace
+				const normalizedPattern = pattern.startsWith('**/') || pattern.startsWith('/') ? pattern : '**/' + pattern;
+				hookFilesPatterns[normalizedPattern] = false;
+				// If the pattern looks like a folder (no file extension), also match JSON files within it
+				const lastSegment = normalizedPattern.split('/').pop() || '';
+				if (!lastSegment.includes('.')) {
+					const folderJsonPattern = normalizedPattern.endsWith('/') ? normalizedPattern + '*.json' : normalizedPattern + '/*.json';
+					hookFilesPatterns[folderJsonPattern] = false;
+				}
+			}
+		}
+	}
 
 	const checks = new ResourceMap<{ patterns: { pattern: glob.ParsedPattern; isApproved: boolean }[]; ignoreCasing: boolean }>();
 	const getPatterns = (wf: URI) => {
@@ -810,7 +832,7 @@ export function makeUriConfirmationChecker(configuration: IConfigurationService,
 
 		const ignoreCasing = extUriBiasedIgnorePathCase.ignorePathCasing(wf);
 		arr = { patterns: [], ignoreCasing };
-		for (const obj of [patterns, ALWAYS_CHECKED_EDIT_PATTERNS]) {
+		for (const obj of [patterns, ALWAYS_CHECKED_EDIT_PATTERNS, hookFilesPatterns]) {
 			if (obj) {
 				for (const [pattern, isApproved] of Object.entries(obj)) {
 					arr.patterns.push({ pattern: glob.parse({ base: wf.fsPath, pattern: ignoreCasing ? pattern.toLowerCase() : pattern }), isApproved });
@@ -824,7 +846,7 @@ export function makeUriConfirmationChecker(configuration: IConfigurationService,
 
 	function checkUri(uri: URI) {
 		const normalizedUri = normalizePath(uri);
-		const workspaceFolder = workspaceService.getWorkspaceFolder(normalizedUri);
+		const workspaceFolder = getWorkspaceFolder(normalizedUri);
 		if (!workspaceFolder && uri.scheme !== Schemas.untitled) { // don't allow to edit external instruction files
 			return ConfirmationCheckResult.OutsideWorkspace;
 		}
@@ -888,8 +910,23 @@ export function makeUriConfirmationChecker(configuration: IConfigurationService,
 	};
 }
 
-export async function createEditConfirmation(accessor: ServicesAccessor, uris: readonly URI[], allowedUris: ResourceSet | undefined, detailMessage?: (urisNeedingConfirmation: readonly URI[]) => Promise<string>): Promise<PreparedToolInvocation> {
-	const checker = makeUriConfirmationChecker(accessor.get(IConfigurationService), accessor.get(IWorkspaceService), accessor.get(ICustomInstructionsService));
+export async function createEditConfirmation(accessor: ServicesAccessor, uris: readonly URI[], allowedUris: ResourceSet | undefined, detailMessage?: (urisNeedingConfirmation: readonly URI[]) => Promise<string>, forceConfirmationReason?: string, getWorkspaceFolder?: (resource: URI) => URI | undefined): Promise<PreparedToolInvocation> {
+	// If forceConfirmationReason is provided, require confirmation for all URIs
+	if (forceConfirmationReason) {
+		const details = detailMessage ? await detailMessage(uris) : undefined;
+
+		return {
+			confirmationMessages: {
+				title: t('Allow edits?'),
+				message: forceConfirmationReason + '\n\n' + t`Do you want to allow this?` + (details ? '\n\n' + details : ''),
+			},
+			presentation: 'hiddenAfterComplete'
+		};
+	}
+
+	const workspaceService = accessor.get(IWorkspaceService);
+	getWorkspaceFolder = getWorkspaceFolder ?? workspaceService.getWorkspaceFolder.bind(workspaceService);
+	const checker = makeUriConfirmationChecker(accessor.get(IConfigurationService), getWorkspaceFolder, accessor.get(ICustomInstructionsService));
 	const needsConfirmation = (await Promise.all(uris
 		.map(async uri => ({ uri, reason: await checker(uri) }))
 	)).filter(r => r.reason !== ConfirmationCheckResult.NoConfirmation && !allowedUris?.has(r.uri));
@@ -944,6 +981,14 @@ export function logEditToolResult(logService: ILogService, requestId: string | u
 	healed?: unknown | undefined;
 }[]) {
 	logService.debug(`[edit-tool:${requestId}] ${JSON.stringify(opts)}`);
+}
+
+export function getDisallowedEditUriError(uri: URI, allowedUris: ResourceSet | undefined, promptPathRepresentationService: IPromptPathRepresentationService): string | undefined {
+	if (!allowedUris || allowedUris.has(uri)) {
+		return undefined;
+	}
+
+	return `File ${promptPathRepresentationService.getFilePath(uri)} is not in the set of allowed files for this edit request.`;
 }
 
 export async function openDocumentAndSnapshot(accessor: ServicesAccessor, promptContext: IBuildPromptContext | undefined, uri: URI): Promise<NotebookDocumentSnapshot | TextDocumentSnapshot> {

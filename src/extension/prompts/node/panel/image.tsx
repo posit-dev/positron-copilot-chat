@@ -23,6 +23,42 @@ export interface ImageProps extends BasePromptElementProps {
 	reference?: Uri;
 }
 
+/**
+ * Props for rendering an image that was previously rendered and stored in conversation history.
+ * These images are already processed (base64 or URL) and don't need re-uploading.
+ */
+export interface HistoricalImageProps extends BasePromptElementProps {
+	/** The image source - either a base64 string or URL */
+	src: string;
+	/** The detail level for the image */
+	detail?: 'auto' | 'low' | 'high';
+	/** The MIME type of the image */
+	mimeType?: string;
+}
+
+/**
+ * Renders an image from conversation history.
+ * Checks if the current model supports vision and omits the image if not.
+ */
+export class HistoricalImage extends PromptElement<HistoricalImageProps, unknown> {
+	constructor(
+		props: HistoricalImageProps,
+		@IPromptEndpoint private readonly promptEndpoint: IPromptEndpoint,
+		@IAuthenticationService private readonly authService: IAuthenticationService,
+	) {
+		super(props);
+	}
+
+	override async render(_state: unknown, sizing: PromptSizing) {
+		// If the model doesn't support vision, omit historical images
+		if (!this.promptEndpoint.supportsVision || !this.authService.copilotToken?.isEditorPreviewFeaturesEnabled()) {
+			return undefined;
+		}
+
+		return <BaseImage src={this.props.src} detail={this.props.detail} mimeType={this.props.mimeType} />;
+	}
+}
+
 export class Image extends PromptElement<ImageProps, unknown> {
 	constructor(
 		props: ImageProps,
@@ -42,7 +78,7 @@ export class Image extends PromptElement<ImageProps, unknown> {
 		const fillerUri: Uri = this.props.reference ?? Uri.parse('Attached Image');
 
 		try {
-			if (!this.promptEndpoint.supportsVision) {
+			if (!this.promptEndpoint.supportsVision || !this.authService.copilotToken?.isEditorPreviewFeaturesEnabled()) {
 				if (this.props.omitReferences) {
 					return;
 				}
@@ -56,9 +92,10 @@ export class Image extends PromptElement<ImageProps, unknown> {
 			const variable = await this.props.variableValue;
 			let imageSource = Buffer.from(variable).toString('base64');
 			let imageMimeType: string | undefined = undefined;
-			const isChatCompletions = typeof this.promptEndpoint.urlOrRequestMetadata !== 'string' && this.promptEndpoint.urlOrRequestMetadata.type === RequestType.ChatCompletions;
+
+			const isChatRequest = typeof this.promptEndpoint.urlOrRequestMetadata !== 'string' && (this.promptEndpoint.urlOrRequestMetadata.type === RequestType.ChatCompletions || this.promptEndpoint.urlOrRequestMetadata.type === RequestType.ChatResponses || this.promptEndpoint.urlOrRequestMetadata.type === RequestType.ChatMessages);
 			const enabled = this.configurationService.getExperimentBasedConfig(ConfigKey.EnableChatImageUpload, this.experimentationService);
-			if (isChatCompletions && enabled && modelCanUseImageURL(this.promptEndpoint)) {
+			if (isChatRequest && enabled && modelCanUseImageURL(this.promptEndpoint)) {
 				try {
 					const githubToken = (await this.authService.getGitHubSession('any', { silent: true }))?.accessToken;
 					const mimeType = getMimeType(imageSource) ?? imageMimeType;

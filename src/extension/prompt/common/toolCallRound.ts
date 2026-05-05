@@ -3,6 +3,7 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 import { FetchSuccess } from '../../../platform/chat/common/commonTypes';
+import { OpenAIContextManagementResponse } from '../../../platform/networking/common/openai';
 import { isEncryptedThinkingDelta, ThinkingData, ThinkingDelta } from '../../../platform/thinking/common/thinking';
 import { generateUuid } from '../../../util/vs/base/common/uuid';
 import { IToolCall, IToolCallRound } from './intents';
@@ -29,7 +30,9 @@ export class ToolCallRound implements IToolCallRound {
 			params.toolInputRetry,
 			params.id,
 			params.statefulMarker,
-			params.thinking
+			params.thinking,
+			params.timestamp,
+			params.compaction,
 		);
 		round.summary = params.summary;
 		round.phase = params.phase;
@@ -43,6 +46,8 @@ export class ToolCallRound implements IToolCallRound {
 	 * @param toolInputRetry The number of times this round has been retried due to tool input validation failures
 	 * @param id A stable identifier for this round
 	 * @param statefulMarker Optional stateful marker used with the responses API
+	 * @param thinking Optional thinking/reasoning data
+	 * @param timestamp Epoch millis when this round started (defaults to `Date.now()`)
 	 */
 	constructor(
 		public readonly response: string,
@@ -50,7 +55,9 @@ export class ToolCallRound implements IToolCallRound {
 		public readonly toolInputRetry: number = 0,
 		public readonly id: string = ToolCallRound.generateID(),
 		public readonly statefulMarker?: string,
-		public readonly thinking?: ThinkingData
+		public readonly thinking?: ThinkingData,
+		public readonly timestamp: number = Date.now(),
+		public readonly compaction?: OpenAIContextManagementResponse,
 	) { }
 
 	private static generateID(): string {

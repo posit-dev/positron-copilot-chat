@@ -51,3 +51,9 @@ src/extension/completions-core
 
 # Ignore files in huksy (else we always end up with files when creating worktrees)
 .husky/_/
+
+# claude
+.claude/settings.local.json
+
+# playwright
+.playwright-mcp/
