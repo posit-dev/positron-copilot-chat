@@ -454,8 +454,9 @@ export class GhostTextComputer {
 					.filter(c => c !== undefined);
 			}
 
-			if (choices && choices[1] === ResultType.Cache) {
+			if (choices && (choices[1] === ResultType.Cache || choices[1] === ResultType.TypingAsSuggested)) {
 				telemetryBuilder.setIsFromCache();
+				logContext.markAsFromCache();
 			}
 
 			if (choices !== undefined && choices[0].length === 0) {
@@ -483,7 +484,8 @@ export class GhostTextComputer {
 						requestContext,
 						telemetryData,
 						cancellationToken,
-						ghostTextStrategy.finishedCb
+						ghostTextStrategy.finishedCb,
+						telemetryBuilder,
 					);
 
 					// TODO: if we already had some choices cached from the initial non-cycling request,
@@ -526,7 +528,8 @@ export class GhostTextComputer {
 						requestContext,
 						telemetryData,
 						asyncCancellationTokenSource.token,
-						finishedCb
+						finishedCb,
+						telemetryBuilder,
 					);
 					void this.asyncCompletionManager.queueCompletionRequest(
 						ourRequestId,

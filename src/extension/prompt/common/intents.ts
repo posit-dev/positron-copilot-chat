@@ -6,6 +6,7 @@
 import type * as vscode from 'vscode';
 import { NotebookDocumentSnapshot } from '../../../platform/editing/common/notebookDocumentSnapshot';
 import { TextDocumentSnapshot } from '../../../platform/editing/common/textDocumentSnapshot';
+import { OpenAIContextManagementResponse } from '../../../platform/networking/common/openai';
 import { ThinkingData } from '../../../platform/thinking/common/thinking';
 import { createServiceIdentifier } from '../../../util/common/services';
 import { ResourceMap, ResourceSet } from '../../../util/vs/base/common/map';
@@ -31,6 +32,8 @@ export interface IToolCallRound {
 	toolCalls: IToolCall[];
 	thinking?: ThinkingData;
 	statefulMarker?: string;
+	/** Compaction data from the Responses API, round-tripped in outgoing requests */
+	compaction?: OpenAIContextManagementResponse;
 	/** Epoch millis (`Date.now()`) when this round started. */
 	timestamp?: number;
 	/**
@@ -106,6 +109,17 @@ export interface IBuildPromptContext {
 	readonly request?: ChatRequest;
 	readonly stream?: vscode.ChatResponseStream;
 	readonly isContinuation?: boolean;
+	/**
+	 * True when the query contains a stop hook message that should be rendered
+	 * as a user message, even during a continuation. This is used to distinguish
+	 * between a normal continuation ("Please continue") and a stop hook
+	 * continuation that requires a specific user message.
+	 */
+	readonly hasStopHookQuery?: boolean;
+	/**
+	 * Additional context provided by a hook.
+	 */
+	readonly additionalHookContext?: string;
 }
 
 export const IBuildPromptContext = createServiceIdentifier<IBuildPromptContext>('IBuildPromptContext');

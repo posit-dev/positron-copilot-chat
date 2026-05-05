@@ -16,7 +16,7 @@ import { ICAPIClientService } from '../../../platform/endpoint/common/capiClient
 import { IDomainService } from '../../../platform/endpoint/common/domainService';
 import { IEnvService } from '../../../platform/env/common/envService';
 import { IGitExtensionService } from '../../../platform/git/common/gitExtensionService';
-import { Repository } from '../../../platform/git/vscode/git';
+import { API, Repository } from '../../../platform/git/vscode/git';
 import { IIgnoreService } from '../../../platform/ignore/common/ignoreService';
 import { ILogService } from '../../../platform/log/common/logService';
 import { IFetcherService, Response } from '../../../platform/networking/common/fetcherService';
@@ -31,6 +31,160 @@ import { FeedbackResult } from '../../prompt/node/feedbackGenerator';
 
 
 const testing = false;
+
+/**
+ * Represents a file change to be reviewed.
+ */
+interface FileChange {
+	repository: Repository | undefined;
+	uri?: Uri;
+	relativePath: string;
+	before: string;
+	after: string;
+	selection?: Selection;
+	document: TextDocument;
+}
+
+/**
+ * Normalizes a file path to use forward slashes on all platforms.
+ */
+export function normalizePath(relativePath: string): string {
+	return process.platform === 'win32' ? relativePath.replace(/\\/g, '/') : relativePath;
+}
+
+/**
+ * Collects file change data for a selection-based review.
+ */
+function collectSelectionChanges(
+	git: API,
+	editor: TextEditor,
+	workspaceService: IWorkspaceService
+): FileChange[] {
+	return [{
+		repository: git.getRepository(editor.document.uri) || undefined,
+		uri: editor.document.uri,
+		relativePath: workspaceService.asRelativePath(editor.document.uri),
+		before: '',
+		after: editor.document.getText(),
+		selection: editor.selection,
+		document: editor.document,
+	}];
+}
+
+/**
+ * Collects file change data for diff-based reviews (index, workingTree, or all).
+ */
+async function collectDiffChanges(
+	git: API,
+	group: 'index' | 'workingTree' | 'all',
+	workspaceService: IWorkspaceService
+): Promise<(FileChange | undefined)[]> {
+	const repositoryChanges = await Promise.all(git.repositories.map(async repository => {
+		const uris = new Set<Uri>();
+		if (group === 'all' || group === 'index') {
+			repository.state.indexChanges.forEach(c => uris.add(c.uri));
+		}
+		if (group === 'all' || group === 'workingTree') {
+			repository.state.workingTreeChanges.forEach(c => uris.add(c.uri));
+			repository.state.untrackedChanges.forEach(c => uris.add(c.uri));
+		}
+		const changes = await Promise.all(Array.from(uris).map(async uri => {
+			const document = await workspaceService.openTextDocument(uri).then(undefined, () => undefined);
+			if (!document) {
+				return undefined; // Deleted files can be skipped.
+			}
+			const before = await (group === 'index' || group === 'all' ? repository.show('HEAD', uri.fsPath).catch(() => '') : repository.show('', uri.fsPath).catch(() => ''));
+			const after = group === 'index' ? await (repository.show('', uri.fsPath).catch(() => '')) : document.getText();
+			const relativePath = path.relative(repository.rootUri.fsPath, uri.fsPath);
+			return {
+				repository,
+				uri,
+				relativePath: normalizePath(relativePath),
+				before,
+				after,
+				document,
+			};
+		}));
+		return changes;
+	}));
+	return repositoryChanges.flat();
+}
+
+/**
+ * Collects file change data for patch-based reviews (e.g., PR reviews).
+ */
+async function collectPatchChanges(
+	git: API,
+	group: { repositoryRoot: string; commitMessages: string[]; patches: { patch: string; fileUri: string; previousFileUri?: string }[] },
+	workspaceService: IWorkspaceService
+): Promise<(FileChange | undefined)[]> {
+	return Promise.all(group.patches.map(async patch => {
+		const uri = Uri.parse(patch.fileUri);
+		const document = await workspaceService.openTextDocument(uri).then(undefined, () => undefined);
+		if (!document) {
+			return undefined; // Deleted files can be skipped.
+		}
+		const after = document.getText();
+		const before = reversePatch(after, patch.patch);
+		const relativePath = path.relative(group.repositoryRoot, uri.fsPath);
+		return {
+			repository: git.getRepository(Uri.parse(group.repositoryRoot))!,
+			relativePath: normalizePath(relativePath),
+			before,
+			after,
+			document,
+		};
+	}));
+}
+
+/**
+ * Collects file change data for single-file reviews.
+ */
+async function collectSingleFileChanges(
+	git: API,
+	group: { group: 'index' | 'workingTree'; file: Uri },
+	workspaceService: IWorkspaceService
+): Promise<FileChange[]> {
+	const { group: g, file } = group;
+	const repository = git.getRepository(file);
+	const document = await workspaceService.openTextDocument(file).then(undefined, () => undefined);
+	if (!repository || !document) {
+		return [];
+	}
+	const before = await (g === 'index' ? repository.show('HEAD', file.fsPath).catch(() => '') : repository.show('', file.fsPath).catch(() => ''));
+	const after = g === 'index' ? await (repository.show('', file.fsPath).catch(() => '')) : document.getText();
+	const relativePath = path.relative(repository.rootUri.fsPath, file.fsPath);
+	return [{
+		repository,
+		relativePath: normalizePath(relativePath),
+		before,
+		after,
+		document,
+	}];
+}
+
+/**
+ * Collects all file changes based on the review group type.
+ */
+async function collectChanges(
+	git: API,
+	group: 'selection' | 'index' | 'workingTree' | 'all' | { group: 'index' | 'workingTree'; file: Uri } | { repositoryRoot: string; commitMessages: string[]; patches: { patch: string; fileUri: string; previousFileUri?: string }[] },
+	editor: TextEditor | undefined,
+	workspaceService: IWorkspaceService
+): Promise<FileChange[]> {
+	if (group === 'selection') {
+		return collectSelectionChanges(git, editor!, workspaceService);
+	}
+	if (typeof group === 'string') {
+		const changes = await collectDiffChanges(git, group, workspaceService);
+		return changes.filter((change): change is FileChange => !!change);
+	}
+	if ('repositoryRoot' in group) {
+		const changes = await collectPatchChanges(git, group, workspaceService);
+		return changes.filter((change): change is FileChange => !!change);
+	}
+	return collectSingleFileChanges(git, group, workspaceService);
+}
 
 export async function githubReview(
 	logService: ILogService,
@@ -52,82 +206,7 @@ export async function githubReview(
 	if (!git) {
 		return { type: 'success', comments: [] };
 	}
-	const changes = group === 'selection' ? [
-		{
-			repository: git.getRepository(editor!.document.uri) || undefined,
-			uri: editor!.document.uri,
-			relativePath: workspaceService.asRelativePath(editor!.document.uri),
-			before: '',
-			after: editor!.document.getText(),
-			selection: editor!.selection,
-			document: editor!.document,
-		}
-	] : (typeof group === 'string'
-		? (await Promise.all(git.repositories.map(async repository => {
-			const uris = new Set<Uri>();
-			if (group === 'all' || group === 'index') {
-				repository.state.indexChanges.forEach(c => uris.add(c.uri));
-			}
-			if (group === 'all' || group === 'workingTree') {
-				repository.state.workingTreeChanges.forEach(c => uris.add(c.uri));
-				repository.state.untrackedChanges.forEach(c => uris.add(c.uri));
-			}
-			const changes = await Promise.all(Array.from(uris).map(async uri => {
-				const document = await workspaceService.openTextDocument(uri).then(undefined, () => undefined);
-				if (!document) {
-					return undefined; // Deleted files can be skipped.
-				}
-				const before = await (group === 'index' || group === 'all' ? repository.show('HEAD', uri.fsPath).catch(() => '') : repository.show('', uri.fsPath).catch(() => ''));
-				const after = group === 'index' ? await (repository.show('', uri.fsPath).catch(() => '')) : document.getText();
-				const relativePath = path.relative(repository.rootUri.fsPath, uri.fsPath);
-				return {
-					repository,
-					uri,
-					relativePath: process.platform === 'win32' ? relativePath.replace(/\\/g, '/') : relativePath,
-					before,
-					after,
-					document,
-				};
-			}));
-			return changes;
-		}))).flat()
-		: 'repositoryRoot' in group ? await Promise.all(group.patches.map(async patch => {
-			const uri = Uri.parse(patch.fileUri);
-			const document = await workspaceService.openTextDocument(uri).then(undefined, () => undefined);
-			if (!document) {
-				return undefined; // Deleted files can be skipped.
-			}
-			const after = document.getText();
-			const before = reversePatch(after, patch.patch);
-			const relativePath = path.relative(group.repositoryRoot, uri.fsPath);
-			return {
-				repository: git.getRepository(Uri.parse(group.repositoryRoot))!,
-				relativePath: process.platform === 'win32' ? relativePath.replace(/\\/g, '/') : relativePath,
-				before,
-				after,
-				document,
-			};
-		}))
-			: await (async () => {
-				const { group: g, file } = group;
-				const repository = git.getRepository(file);
-				const document = await workspaceService.openTextDocument(file).then(undefined, () => undefined);
-				if (!repository || !document) {
-					return [];
-				}
-				const before = await (g === 'index' ? repository.show('HEAD', file.fsPath).catch(() => '') : repository.show('', file.fsPath).catch(() => ''));
-				const after = g === 'index' ? await (repository.show('', file.fsPath).catch(() => '')) : document.getText();
-				const relativePath = path.relative(repository.rootUri.fsPath, file.fsPath);
-				return [
-					{
-						repository,
-						relativePath: process.platform === 'win32' ? relativePath.replace(/\\/g, '/') : relativePath,
-						before,
-						after,
-						document,
-					}
-				];
-			})()).filter((change): change is NonNullable<typeof change> => !!change);
+	const changes = await collectChanges(git, group, editor, workspaceService);
 
 	if (!changes.length) {
 		return { type: 'success', comments: [] };
@@ -208,7 +287,103 @@ export async function githubReview(
 	return { type: 'success', comments, excludedComments, reason: unsupportedLanguages.length ? l10n.t('Some of the submitted languages are currently not supported: {0}', unsupportedLanguages.join(', ')) : undefined };
 }
 
-function createReviewComment(ghComment: ResponseComment | ExcludedComment, request: ReviewRequest, document: TextDocument, index: number) {
+/**
+ * Review files specified as URI pairs (current + base content).
+ * This is the entry point for the `github.copilot.chat.codeReview.run` command,
+ * bypassing git-based change collection.
+ */
+export async function githubReviewFileUris(
+	logService: ILogService,
+	authService: IAuthenticationService,
+	capiClientService: ICAPIClientService,
+	fetcherService: IFetcherService,
+	envService: IEnvService,
+	ignoreService: IIgnoreService,
+	workspaceService: IWorkspaceService,
+	customInstructionsService: ICustomInstructionsService,
+	fileInputs: readonly { readonly currentUri: Uri; readonly baseContent: string }[],
+	cancellationToken: CancellationToken,
+): Promise<FeedbackResult> {
+	const changes: { readonly relativePath: string; readonly before: string; readonly after: string; readonly document: TextDocument; readonly uri: Uri }[] = [];
+	for (const input of fileInputs) {
+		const document = await workspaceService.openTextDocument(input.currentUri);
+		changes.push({
+			uri: input.currentUri,
+			relativePath: normalizePath(workspaceService.asRelativePath(input.currentUri)),
+			before: input.baseContent,
+			after: document.getText(),
+			document,
+		});
+	}
+
+	if (!changes.length) {
+		return { type: 'success', comments: [] };
+	}
+
+	const ignored = await Promise.all(changes.map(c => ignoreService.isCopilotIgnored(c.uri)));
+	const filteredChanges = changes.filter((_, i) => !ignored[i]);
+	if (filteredChanges.length === 0) {
+		logService.info('All input documents are ignored. Skipping feedback generation.');
+		return {
+			type: 'error',
+			severity: 'info',
+			reason: l10n.t('All input documents are ignored by configuration. Check your .copilotignore file.')
+		};
+	}
+	logService.debug(`[github review agent] files: ${filteredChanges.map(c => c.relativePath).join(', ')}`);
+
+	const { requestId, rl } = await fetchComments(
+		logService, authService, capiClientService, fetcherService, envService,
+		customInstructionsService, workspaceService,
+		'diff',
+		undefined,
+		filteredChanges.map(c => ({ path: c.relativePath, content: c.before, languageId: c.document.languageId })),
+		filteredChanges.map(c => ({ path: c.relativePath, content: c.after, languageId: c.document.languageId })),
+		cancellationToken,
+	);
+	if (!rl || cancellationToken.isCancellationRequested) {
+		return { type: 'cancelled' };
+	}
+
+	logService.info(`[github review agent] request id: ${requestId}`);
+
+	const request: ReviewRequest = {
+		source: 'githubReviewAgent',
+		promptCount: -1,
+		messageId: requestId || generateUuid(),
+		inputType: 'change',
+		inputRanges: [],
+	};
+	const references: ResponseReference[] = [];
+	const comments: ReviewComment[] = [];
+	for await (const line of rl) {
+		if (cancellationToken.isCancellationRequested) {
+			return { type: 'cancelled' };
+		}
+		logService.debug(`[github review agent] response line: ${line}`);
+		const refs = parseLine(line);
+		references.push(...refs);
+		for (const ghComment of refs.filter(ref => ref.type === 'github.generated-pull-request-comment')) {
+			const change = filteredChanges.find(c => c.relativePath === ghComment.data.path);
+			if (!change) {
+				continue;
+			}
+			const comment = createReviewComment(ghComment, request, change.document, comments.length);
+			comments.push(comment);
+		}
+	}
+	const excludedComments = references.filter((ref): ref is ExcludedComment => ref.type === 'github.excluded-pull-request-comment')
+		.map(ghComment => {
+			const change = filteredChanges.find(c => c.relativePath === ghComment.data.path);
+			return { ghComment, change };
+		}).filter((item): item is { ghComment: ExcludedComment; change: NonNullable<typeof item.change> } => !!item.change)
+		.map(({ ghComment, change }, i) => createReviewComment(ghComment, request, change.document, comments.length + i));
+	const unsupportedLanguages = !comments.length ? [...new Set(references.filter((ref): ref is ExcludedFile => ref.type === 'github.excluded-file' && ref.data.reason === 'file_type_not_supported')
+		.map(ref => ref.data.language))] : [];
+	return { type: 'success', comments, excludedComments, reason: unsupportedLanguages.length ? l10n.t('Some of the submitted languages are currently not supported: {0}', unsupportedLanguages.join(', ')) : undefined };
+}
+
+export function createReviewComment(ghComment: ResponseComment | ExcludedComment, request: ReviewRequest, document: TextDocument, index: number) {
 	const fromLine = document.lineAt(ghComment.data.line - 1);
 	const lastNonWhitespaceCharacterIndex = fromLine.text.trimEnd().length;
 	const range = new Range(fromLine.lineNumber, fromLine.firstNonWhitespaceCharacterIndex, fromLine.lineNumber, lastNonWhitespaceCharacterIndex);
@@ -245,7 +420,7 @@ function createReviewComment(ghComment: ResponseComment | ExcludedComment, reque
 }
 
 const SUGGESTION_EXPRESSION = /```suggestion(\u0020*(\r\n|\n))((?<suggestion>[\s\S]*?)(\r\n|\n))?```/g;
-function removeSuggestion(body: string) {
+export function removeSuggestion(body: string) {
 	const suggestions: string[] = [];
 	const content = body.replaceAll(SUGGESTION_EXPRESSION, (_match, _ws, _nl, suggestion) => {
 		if (suggestion) {
@@ -291,9 +466,9 @@ interface FileState {
 //   }
 // }
 
-type ResponseReference = ResponseComment | ExcludedComment | ExcludedFile | { type: 'unknown' };
+export type ResponseReference = ResponseComment | ExcludedComment | ExcludedFile | { type: 'unknown' };
 
-interface ResponseComment {
+export interface ResponseComment {
 	type: 'github.generated-pull-request-comment';
 	data: {
 		// The path of the file
@@ -306,7 +481,7 @@ interface ResponseComment {
 	};
 }
 
-interface ExcludedComment {
+export interface ExcludedComment {
 	type: 'github.excluded-pull-request-comment';
 	data: {
 		path: string;
@@ -317,7 +492,7 @@ interface ExcludedComment {
 	};
 }
 
-interface ExcludedFile {
+export interface ExcludedFile {
 	type: 'github.excluded-file';
 	data: {
 		file_path: string;
@@ -326,15 +501,38 @@ interface ExcludedFile {
 	};
 }
 
-function parseLine(line: string): ResponseReference[] {
+/**
+ * Raw reference structure from the API response before type validation.
+ */
+interface RawReference {
+	type?: string;
+	data?: unknown;
+}
+
+/**
+ * Raw parsed response structure from the streaming API.
+ */
+interface ParsedResponse {
+	copilot_references?: RawReference[];
+}
+
+/**
+ * Type guard to check if a raw reference has a valid type field.
+ * Matches original behavior: filters to refs where ref.type is truthy.
+ */
+function hasType(ref: RawReference): ref is RawReference & { type: string } {
+	return !!ref.type;
+}
+
+export function parseLine(line: string): ResponseReference[] {
 
 	if (line === 'data: [DONE]') { return []; }
 	if (line === '') { return []; }
 
-	const parsedLine = JSON.parse(line.replace('data: ', ''));
+	const parsedLine: ParsedResponse = JSON.parse(line.replace('data: ', ''));
 
 	if (Array.isArray(parsedLine.copilot_references) && parsedLine.copilot_references.length > 0) {
-		return parsedLine.copilot_references.filter((ref: any) => ref.type) as ResponseReference[];
+		return parsedLine.copilot_references.filter(hasType) as ResponseReference[];
 	} else {
 		return [];
 	}
@@ -428,19 +626,19 @@ async function fetchComments(logService: ILogService, authService: IAuthenticati
 	};
 }
 
-function reversePatch(after: string, diff: string) {
+export function reversePatch(after: string, diff: string) {
 	const patch = parsePatch(diff.split(/\r?\n/));
 	const patchedLines = reverseParsedPatch(after.split(/\r?\n/), patch);
 	return patchedLines.join('\n');
 }
 
-interface LineChange {
+export interface LineChange {
 	beforeLineNumber: number;
 	content: string;
 	type: 'add' | 'remove';
 }
 
-function parsePatch(patchLines: string[]): LineChange[] {
+export function parsePatch(patchLines: string[]): LineChange[] {
 	const changes: LineChange[] = [];
 	let beforeLineNumber = -1;
 
@@ -465,7 +663,7 @@ function parsePatch(patchLines: string[]): LineChange[] {
 	return changes;
 }
 
-function reverseParsedPatch(fileLines: string[], patch: LineChange[]): string[] {
+export function reverseParsedPatch(fileLines: string[], patch: LineChange[]): string[] {
 	for (const change of patch) {
 		if (change.type === 'add') {
 			fileLines.splice(change.beforeLineNumber - 1, 1);
@@ -477,7 +675,7 @@ function reverseParsedPatch(fileLines: string[], patch: LineChange[]): string[] 
 	return fileLines;
 }
 
-interface CodingGuideline {
+export interface CodingGuideline {
 	type: string;
 	id: string;
 	data: {
@@ -489,7 +687,7 @@ interface CodingGuideline {
 	};
 }
 
-async function loadCustomInstructions(customInstructionsService: ICustomInstructionsService, workspaceService: IWorkspaceService, kind: 'selection' | 'diff', languageIdToFilePatterns: Map<string, Set<string>>, firstId: number): Promise<CodingGuideline[]> {
+export async function loadCustomInstructions(customInstructionsService: ICustomInstructionsService, workspaceService: IWorkspaceService, kind: 'selection' | 'diff', languageIdToFilePatterns: Map<string, Set<string>>, firstId: number): Promise<CodingGuideline[]> {
 	const customInstructionRefs = [];
 	let nextId = firstId;
 

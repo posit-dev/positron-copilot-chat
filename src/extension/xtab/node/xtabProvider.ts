@@ -16,11 +16,11 @@ import { LanguageContextEntry, LanguageContextResponse } from '../../../platform
 import { LanguageId } from '../../../platform/inlineEdits/common/dataTypes/languageId';
 import { NextCursorLinePrediction } from '../../../platform/inlineEdits/common/dataTypes/nextCursorLinePrediction';
 import * as xtabPromptOptions from '../../../platform/inlineEdits/common/dataTypes/xtabPromptOptions';
-import { LanguageContextLanguages, LanguageContextOptions, PromptingStrategy } from '../../../platform/inlineEdits/common/dataTypes/xtabPromptOptions';
+import { AggressivenessSetting, isAggressivenessStrategy, LanguageContextLanguages, LanguageContextOptions } from '../../../platform/inlineEdits/common/dataTypes/xtabPromptOptions';
 import { InlineEditRequestLogContext } from '../../../platform/inlineEdits/common/inlineEditLogContext';
 import { IInlineEditsModelService } from '../../../platform/inlineEdits/common/inlineEditsModelService';
 import { ResponseProcessor } from '../../../platform/inlineEdits/common/responseProcessor';
-import { IStatelessNextEditProvider, NoNextEditReason, PushEdit, ShowNextEditPreference, StatelessNextEditDocument, StatelessNextEditRequest, StatelessNextEditResult, StatelessNextEditTelemetryBuilder, StreamedEdit } from '../../../platform/inlineEdits/common/statelessNextEditProvider';
+import { EditStreaming, EditStreamingWithTelemetry, IStatelessNextEditProvider, NoNextEditReason, StatelessNextEditDocument, StatelessNextEditRequest, StatelessNextEditTelemetryBuilder, WithStatelessProviderTelemetry } from '../../../platform/inlineEdits/common/statelessNextEditProvider';
 import { editWouldDeleteWhatWasJustInserted, editWouldDeleteWhatWasJustInserted2, IgnoreEmptyLineAndLeadingTrailingWhitespaceChanges, IgnoreWhitespaceOnlyChanges } from '../../../platform/inlineEdits/common/statelessNextEditProviders';
 import { ILanguageContextProviderService, ProviderTarget } from '../../../platform/languageContextProvider/common/languageContextProviderService';
 import { ILanguageDiagnosticsService } from '../../../platform/languages/common/languageDiagnosticsService';
@@ -32,10 +32,11 @@ import { ISimulationTestContext } from '../../../platform/simulationTestContext/
 import { IExperimentationService } from '../../../platform/telemetry/common/nullExperimentationService';
 import { IWorkspaceService } from '../../../platform/workspace/common/workspaceService';
 import { raceFilter } from '../../../util/common/async';
-import * as errors from '../../../util/common/errors';
+import { AsyncIterUtils, AsyncIterUtilsExt } from '../../../util/common/asyncIterableUtils';
+import { ErrorUtils } from '../../../util/common/errors';
 import { Result } from '../../../util/common/result';
 import { assertNever } from '../../../util/vs/base/common/assert';
-import { AsyncIterableObject, DeferredPromise, raceTimeout, timeout } from '../../../util/vs/base/common/async';
+import { DeferredPromise, raceTimeout, timeout } from '../../../util/vs/base/common/async';
 import { CancellationToken } from '../../../util/vs/base/common/cancellation';
 import { StopWatch } from '../../../util/vs/base/common/stopwatch';
 import { LineEdit, LineReplacement } from '../../../util/vs/editor/common/core/edits/lineEdit';
@@ -49,15 +50,28 @@ import { DelaySession } from '../../inlineEdits/common/delay';
 import { getOrDeduceSelectionFromLastEdit } from '../../inlineEdits/common/nearbyCursorInlineEditProvider';
 import { UserInteractionMonitor } from '../../inlineEdits/common/userInteractionMonitor';
 import { IgnoreImportChangesAspect } from '../../inlineEdits/node/importFiltering';
+import { isInlineSuggestion } from '../common/inlineSuggestion';
 import { LintErrors } from '../common/lintErrors';
-import { constructTaggedFile, countTokensForLines, getUserPrompt, N_LINES_ABOVE, N_LINES_AS_CONTEXT, N_LINES_BELOW, PromptPieces, toUniquePath } from '../common/promptCrafting';
+import { constructTaggedFile, getUserPrompt, N_LINES_ABOVE, N_LINES_AS_CONTEXT, N_LINES_BELOW, PromptPieces } from '../common/promptCrafting';
+import { countTokensForLines, toUniquePath } from '../common/promptCraftingUtils';
+import { ISimilarFilesContextService } from '../common/similarFilesContextService';
 import { nes41Miniv3SystemPrompt, simplifiedPrompt, systemPromptTemplate, unifiedModelSystemPrompt, xtab275SystemPrompt } from '../common/systemMessages';
 import { PromptTags, ResponseTags } from '../common/tags';
+import { TerminalMonitor } from '../common/terminalOutput';
 import { CurrentDocument } from '../common/xtabCurrentDocument';
 import { XtabCustomDiffPatchResponseHandler } from './xtabCustomDiffPatchResponseHandler';
 import { XtabEndpoint } from './xtabEndpoint';
 import { XtabNextCursorPredictor } from './xtabNextCursorPredictor';
-import { charCount, constructMessages, linesWithBackticksRemoved, toLines } from './xtabUtils';
+import { charCount, constructMessages, linesWithBackticksRemoved } from './xtabUtils';
+
+/**
+ * Returns true if the user has made document edits since the request was created.
+ * Used to skip costly sub-requests (e.g. next cursor prediction) whose results will
+ * be stale by the time they return.
+ */
+function hasUserTypedSinceRequestStarted(request: StatelessNextEditRequest): boolean {
+	return request.intermediateUserEdit === undefined || !request.intermediateUserEdit.isEmpty();
+}
 
 namespace RetryState {
 	export class NotRetrying { public static INSTANCE = new NotRetrying(); }
@@ -68,11 +82,9 @@ namespace RetryState {
 		| Retrying;
 }
 
-interface ModelConfig extends xtabPromptOptions.PromptOptions {
+export interface ModelConfig extends xtabPromptOptions.PromptOptions {
 	modelName: string | undefined;
 }
-
-type EditStreaming = AsyncGenerator<StreamedEdit, NoNextEditReason, void>
 
 export class XtabProvider implements IStatelessNextEditProvider {
 
@@ -80,11 +92,11 @@ export class XtabProvider implements IStatelessNextEditProvider {
 
 	public readonly ID = XtabProvider.ID;
 
-	public readonly showNextEditPreference = ShowNextEditPreference.Always;
-
 	private static computeTokens = (s: string) => Math.floor(s.length / 4);
 
 	private readonly userInteractionMonitor: UserInteractionMonitor;
+
+	private readonly terminalMonitor: TerminalMonitor;
 
 	private forceUseDefaultModel: boolean = false;
 
@@ -101,8 +113,10 @@ export class XtabProvider implements IStatelessNextEditProvider {
 		@ILanguageContextProviderService private readonly langCtxService: ILanguageContextProviderService,
 		@ILanguageDiagnosticsService private readonly langDiagService: ILanguageDiagnosticsService,
 		@IIgnoreService private readonly ignoreService: IIgnoreService,
+		@ISimilarFilesContextService private readonly similarFilesContextService: ISimilarFilesContextService,
 	) {
-		this.userInteractionMonitor = new UserInteractionMonitor(this.configService, this.expService);
+		this.userInteractionMonitor = this.instaService.createInstance(UserInteractionMonitor);
+		this.terminalMonitor = this.instaService.createInstance(TerminalMonitor);
 		this.nextCursorPredictor = this.instaService.createInstance(XtabNextCursorPredictor, XtabProvider.computeTokens);
 	}
 
@@ -114,13 +128,18 @@ export class XtabProvider implements IStatelessNextEditProvider {
 		this.userInteractionMonitor.handleRejection();
 	}
 
-	public async provideNextEdit(request: StatelessNextEditRequest, pushEdit: PushEdit, logger: ILogger, logContext: InlineEditRequestLogContext, cancellationToken: CancellationToken): Promise<StatelessNextEditResult> {
-		const telemetry = new StatelessNextEditTelemetryBuilder(request);
+	public handleIgnored(): void {
+		this.userInteractionMonitor.handleIgnored();
+	}
+
+	public async *provideNextEdit(request: StatelessNextEditRequest, logger: ILogger, logContext: InlineEditRequestLogContext, cancellationToken: CancellationToken): EditStreamingWithTelemetry {
+		const telemetry = new StatelessNextEditTelemetryBuilder(request.headerRequestId);
 
 		logContext.setProviderStartTime();
 		try {
 			if (request.xtabEditHistory.length === 0) {
-				return StatelessNextEditResult.noEdit(new NoNextEditReason.ActiveDocumentHasNoEdits(), telemetry);
+				const noSuggestionReason = new NoNextEditReason.ActiveDocumentHasNoEdits();
+				return new WithStatelessProviderTelemetry(noSuggestionReason, telemetry.build(Result.error(noSuggestionReason)));
 			}
 
 			const delaySession = this.userInteractionMonitor.createDelaySession(request.providerRequestStartDateTime);
@@ -129,39 +148,22 @@ export class XtabProvider implements IStatelessNextEditProvider {
 
 			let res = await iterator.next(); // for-async-await loop doesn't work because we need to access the final return value
 
-			let nextEditResult: Result<void, NoNextEditReason>;
-
-			if (res.done) {
-				// stream already ended, so we can just return the final reason
-				nextEditResult = Result.error(res.value);
-				pushEdit(nextEditResult);
-			} else {
-				// stream is not done yet, so we push the first edit and then continue streaming in the background
-
-				nextEditResult = Result.ok(undefined);
-
-				(async () => {
-					let nEdits = 0;
-					while (!res.done) {
-						nEdits++;
-						pushEdit(Result.ok(res.value));
-						res = await iterator.next();
-					}
-					pushEdit(Result.error(res.value));
-				})().catch((err: unknown) => {
-					const error = errors.fromUnknown(err);
-					logContext.addLog(`Error while streaming further edits: ${errors.fromUnknown(err)}`);
-					pushEdit(Result.error(new NoNextEditReason.Unexpected(error)));
-				});
+			while (!res.done) {
+				yield new WithStatelessProviderTelemetry(res.value, telemetry.build(Result.ok(undefined)));
+				res = await iterator.next();
 			}
 
-			if (nextEditResult.isError() && nextEditResult.err instanceof NoNextEditReason.GotCancelled) {
+			const noNextEditReason = res.value;
+
+			if (noNextEditReason instanceof NoNextEditReason.GotCancelled) {
 				logContext.setIsSkipped();
 			}
 
-			return new StatelessNextEditResult(nextEditResult, telemetry.build(nextEditResult));
+			return new WithStatelessProviderTelemetry(noNextEditReason, telemetry.build(Result.error(noNextEditReason)));
 		} catch (err: unknown) {
-			return StatelessNextEditResult.noEdit(new NoNextEditReason.Unexpected(errors.fromUnknown(err)), telemetry);
+			const error = ErrorUtils.fromUnknown(err);
+			const noSuggestionReason = new NoNextEditReason.Unexpected(error);
+			return new WithStatelessProviderTelemetry(noSuggestionReason, telemetry.build(Result.error(noSuggestionReason)));
 		} finally {
 			logContext.setProviderEndTime();
 		}
@@ -197,6 +199,12 @@ export class XtabProvider implements IStatelessNextEditProvider {
 		cancellationToken: CancellationToken,
 		telemetryBuilder: StatelessNextEditTelemetryBuilder,
 		retryState: RetryState.t,
+		/**
+		 * For cursor jump scenarios, this is the edit window around the original cursor position
+		 * (before the jump). When provided, yielded edits will include this as `originalWindow`
+		 * so the cache can serve the edit when the cursor is in either location.
+		 */
+		originalEditWindow?: OffsetRange,
 	): EditStreaming {
 
 		const tracer = parentTracer.createSubLogger(['XtabProvider', 'doGetNextEditWithSelection']);
@@ -220,15 +228,33 @@ export class XtabProvider implements IStatelessNextEditProvider {
 		const cursorLine = currentDocument.lines[currentDocument.cursorLineOffset];
 		// check if there's any non-whitespace character after the cursor in the line
 		const isCursorAtEndOfLine = cursorLine.substring(cursorPosition.column - 1).match(/^\s*$/) !== null;
-		if (isCursorAtEndOfLine) {
-			tracer.trace('Debouncing for cursor at end of line');
-			delaySession.setExtraDebounce(this.configService.getExperimentBasedConfig(ConfigKey.TeamInternal.InlineEditsExtraDebounceEndOfLine, this.expService));
-		} else {
-			tracer.trace('Debouncing for cursor NOT at end of line');
-		}
 		telemetryBuilder.setIsCursorAtLineEnd(isCursorAtEndOfLine);
 
-		const areaAroundEditWindowLinesRange = this.computeAreaAroundEditWindowLinesRange(currentDocument);
+		// Apply extra debounce based on cursor position - only one applies
+		const isInlineSuggestionPosition = isInlineSuggestion(currentDocument, cursorPosition);
+		telemetryBuilder.setIsInlineSuggestion(!!isInlineSuggestionPosition);
+
+		if (request.isSpeculative) {
+			tracer.trace('No extra debounce applied for speculative request');
+		} else {
+			const inlineSuggestionDebounce = this.configService.getExperimentBasedConfig(ConfigKey.TeamInternal.InlineEditsExtraDebounceInlineSuggestion, this.expService);
+			if (isInlineSuggestionPosition && inlineSuggestionDebounce > 0) {
+				tracer.trace('Debouncing for inline suggestion position');
+				delaySession.setExtraDebounce(inlineSuggestionDebounce);
+			} else if (isCursorAtEndOfLine) {
+				tracer.trace('Debouncing for cursor at end of line');
+				delaySession.setExtraDebounce(this.configService.getExperimentBasedConfig(ConfigKey.TeamInternal.InlineEditsExtraDebounceEndOfLine, this.expService));
+			} else {
+				tracer.trace('No extra debounce applied');
+			}
+		}
+
+		// Adjust debounce based on user aggressiveness setting for non-aggressiveness models
+		if (!isAggressivenessStrategy(promptOptions.promptingStrategy)) {
+			this._applyAggressivenessSettings(delaySession, tracer);
+		}
+
+		const areaAroundEditWindowLinesRange = computeAreaAroundEditWindowLinesRange(currentDocument);
 
 		const editWindowLinesRange = this.computeEditWindowLinesRange(currentDocument, request, tracer, telemetryBuilder);
 
@@ -272,8 +298,14 @@ export class XtabProvider implements IStatelessNextEditProvider {
 
 		const { aggressivenessLevel, userHappinessScore } = this.userInteractionMonitor.getAggressivenessLevel();
 
-		// Log aggressiveness level and user happiness score when using XtabAggressiveness prompting strategy
-		if (promptOptions.promptingStrategy === PromptingStrategy.XtabAggressiveness) {
+		// Log user's raw aggressiveness setting when explicitly changed from default
+		const userAggressivenessSetting = this.configService.getExperimentBasedConfig(ConfigKey.Advanced.InlineEditsAggressiveness, this.expService);
+		if (userAggressivenessSetting !== AggressivenessSetting.Default) {
+			telemetryBuilder.setUserAggressivenessSetting(userAggressivenessSetting);
+		}
+
+		// Log aggressiveness level and user happiness score when using an aggressiveness-aware prompting strategy
+		if (isAggressivenessStrategy(promptOptions.promptingStrategy)) {
 			telemetryBuilder.setXtabAggressivenessLevel(aggressivenessLevel);
 			if (userHappinessScore !== undefined) {
 				telemetryBuilder.setXtabUserHappinessScore(userHappinessScore);
@@ -295,7 +327,7 @@ export class XtabProvider implements IStatelessNextEditProvider {
 			return new NoNextEditReason.GotCancelled('afterLanguageContextAwait');
 		}
 
-		const lintErrors = promptOptions.lintOptions ? new LintErrors(promptOptions.lintOptions, activeDocument.id, currentDocument, this.langDiagService) : undefined;
+		const lintErrors = new LintErrors(activeDocument.id, currentDocument, this.langDiagService);
 
 		const promptPieces = new PromptPieces(
 			currentDocument,
@@ -312,14 +344,17 @@ export class XtabProvider implements IStatelessNextEditProvider {
 			promptOptions
 		);
 
-		const userPrompt = getUserPrompt(promptPieces);
+		const { prompt: userPrompt, nDiffsInPrompt, diffTokensInPrompt } = getUserPrompt(promptPieces);
+
+		telemetryBuilder.setNDiffsInPrompt(nDiffsInPrompt);
+		telemetryBuilder.setDiffTokensInPrompt(diffTokensInPrompt);
 
 		const responseFormat = xtabPromptOptions.ResponseFormat.fromPromptingStrategy(promptOptions.promptingStrategy);
 
 		const prediction = this.getPredictedOutput(activeDocument, editWindowLines, responseFormat);
 
 		const messages = constructMessages({
-			systemMsg: this.pickSystemPrompt(promptOptions.promptingStrategy),
+			systemMsg: pickSystemPrompt(promptOptions.promptingStrategy),
 			userMsg: userPrompt,
 		});
 
@@ -336,6 +371,22 @@ export class XtabProvider implements IStatelessNextEditProvider {
 		if (cancellationToken.isCancellationRequested) {
 			return new NoNextEditReason.GotCancelled('afterDebounce');
 		}
+
+		// Fire-and-forget: collect lint errors and terminal output for telemetry in background to avoid blocking the main path
+		Promise.resolve().then(() => {
+			const lintErrorsData = lintErrors.getData();
+			telemetryBuilder.setLintErrors(lintErrorsData);
+			logContext.setDiagnosticsData(lintErrorsData);
+
+			const terminalOutputData = this.terminalMonitor.getData();
+			telemetryBuilder.setTerminalOutput(terminalOutputData);
+			logContext.setTerminalData(terminalOutputData);
+		});
+
+		// Fire-and-forget: compute GhostText-style similar files context for telemetry
+		telemetryBuilder.setSimilarFilesContext(
+			this.similarFilesContextService.compute(activeDocument.id.uri, activeDocument.languageId, activeDocument.documentAfterEdits.value, currentDocument.cursorOffset)
+		);
 
 		request.fetchIssued = true;
 
@@ -356,13 +407,52 @@ export class XtabProvider implements IStatelessNextEditProvider {
 				shouldRemoveCursorTagFromResponse,
 				responseFormat,
 				retryState,
+				aggressivenessLevel,
+				userHappinessScore,
 			},
 			delaySession,
 			tracer,
 			telemetryBuilder,
 			logContext,
-			cancellationToken
+			cancellationToken,
+			originalEditWindow,
 		);
+	}
+
+	private _applyAggressivenessSettings(delaySession: DelaySession, tracer: ILogger): void {
+		const userAggressiveness = this.configService.getExperimentBasedConfig(ConfigKey.Advanced.InlineEditsAggressiveness, this.expService);
+		type MinResponseTimeConfigKey = typeof ConfigKey.TeamInternal.InlineEditsAggressivenessLowMinResponseTimeMs;
+		type DebounceConfigKey = typeof ConfigKey.TeamInternal.InlineEditsAggressivenessHighDebounceMs;
+		const configsByLevel: Record<AggressivenessSetting, { debounceConfigKey?: DebounceConfigKey; minResponseConfigKey?: MinResponseTimeConfigKey } | undefined> = {
+			[AggressivenessSetting.Low]: { minResponseConfigKey: ConfigKey.TeamInternal.InlineEditsAggressivenessLowMinResponseTimeMs },
+			[AggressivenessSetting.Medium]: { minResponseConfigKey: ConfigKey.TeamInternal.InlineEditsAggressivenessMediumMinResponseTimeMs },
+			[AggressivenessSetting.High]: { debounceConfigKey: ConfigKey.TeamInternal.InlineEditsAggressivenessHighDebounceMs },
+			[AggressivenessSetting.Default]: undefined,
+		};
+		const entry = configsByLevel[userAggressiveness];
+		if (!entry) {
+			return;
+		}
+
+		// Apply debounce override if configured for this level
+		if (entry.debounceConfigKey) {
+			const debounceMs = this.configService.getExperimentBasedConfig(entry.debounceConfigKey, this.expService);
+			delaySession.setBaseDebounceTime(debounceMs);
+			tracer.trace(`Aggressiveness ${userAggressiveness}: debounce set to ${debounceMs}ms`);
+		}
+
+		// Apply min response time if configured for this level
+		if (entry.minResponseConfigKey) {
+			// Skip min response time delay if the user just accepted a suggestion
+			if (this.userInteractionMonitor.wasLastActionAcceptance) {
+				tracer.trace(`Aggressiveness ${userAggressiveness}: skipping min response time (last action was acceptance)`);
+				return;
+			}
+
+			const minResponseTimeMs = this.configService.getExperimentBasedConfig(entry.minResponseConfigKey, this.expService);
+			delaySession.setExpectedTotalTime(minResponseTimeMs);
+			tracer.trace(`Aggressiveness ${userAggressiveness}: min response time set to ${minResponseTimeMs}ms`);
+		}
 	}
 
 	private getAndProcessLanguageContext(
@@ -385,7 +475,6 @@ export class XtabProvider implements IStatelessNextEditProvider {
 
 		// if recording, add diagnostics for the file to the recording and hook up the language context promise to write to the recording
 		if (recordingEnabled) {
-			logContext.setFileDiagnostics(this.langDiagService.getAllDiagnostics());
 			langCtxPromise.then(langCtxs => {
 				if (langCtxs) {
 					logContext.setLanguageContext(langCtxs);
@@ -425,7 +514,7 @@ export class XtabProvider implements IStatelessNextEditProvider {
 
 			const ctxRequest: Copilot.ResolveRequest = {
 				opportunityId: request.opportunityId,
-				completionId: request.id,
+				completionId: request.headerRequestId,
 				documentContext: {
 					uri: textDoc.uri.toString(),
 					languageId: textDoc.languageId,
@@ -473,7 +562,7 @@ export class XtabProvider implements IStatelessNextEditProvider {
 			return { start, end, items: langCtxItems };
 
 		} catch (error: unknown) {
-			logContext.setError(errors.fromUnknown(error));
+			logContext.setError(ErrorUtils.fromUnknown(error));
 			tracer.trace(`Failed to fetch language context: ${error}`);
 			return undefined;
 		}
@@ -494,12 +583,15 @@ export class XtabProvider implements IStatelessNextEditProvider {
 			responseFormat: xtabPromptOptions.ResponseFormat;
 			shouldRemoveCursorTagFromResponse: boolean;
 			retryState: RetryState.t;
+			aggressivenessLevel: xtabPromptOptions.AggressivenessLevel;
+			userHappinessScore: number | undefined;
 		},
 		delaySession: DelaySession,
 		parentTracer: ILogger,
 		telemetryBuilder: StatelessNextEditTelemetryBuilder,
 		logContext: InlineEditRequestLogContext,
 		cancellationToken: CancellationToken,
+		originalEditWindow: OffsetRange | undefined,
 	): EditStreaming {
 		const tracer = parentTracer.createSubLogger('streamEditsWithFiltering');
 
@@ -520,6 +612,7 @@ export class XtabProvider implements IStatelessNextEditProvider {
 			telemetryBuilder,
 			logContext,
 			cancellationToken,
+			originalEditWindow,
 		);
 
 		let nEdits = 0;
@@ -564,12 +657,15 @@ export class XtabProvider implements IStatelessNextEditProvider {
 			responseFormat: xtabPromptOptions.ResponseFormat;
 			shouldRemoveCursorTagFromResponse: boolean;
 			retryState: RetryState.t;
+			aggressivenessLevel: xtabPromptOptions.AggressivenessLevel;
+			userHappinessScore: number | undefined;
 		},
 		delaySession: DelaySession,
 		parentTracer: ILogger,
 		telemetryBuilder: StatelessNextEditTelemetryBuilder,
 		logContext: InlineEditRequestLogContext,
 		cancellationToken: CancellationToken,
+		originalEditWindow: OffsetRange | undefined,
 	): EditStreaming {
 		const tracer = parentTracer.createSubLogger('streamEdits');
 
@@ -586,6 +682,8 @@ export class XtabProvider implements IStatelessNextEditProvider {
 		let ttft: number | undefined;
 
 		const firstTokenReceived = new DeferredPromise<void>();
+
+		logContext.setHeaderRequestId(request.headerRequestId);
 
 		telemetryBuilder.setFetchStartedAt();
 		logContext.setFetchStartTime();
@@ -618,9 +716,13 @@ export class XtabProvider implements IStatelessNextEditProvider {
 				} satisfies OptionalChatRequestParams,
 				userInitiatedRequest: undefined,
 				telemetryProperties: {
-					requestId: request.id,
+					requestId: request.headerRequestId,
 				},
 				useFetcher,
+				customMetadata: {
+					aggressivenessLevel: opts.aggressivenessLevel,
+					userHappinessScore: opts.userHappinessScore,
+				},
 			},
 			cancellationToken,
 		);
@@ -636,7 +738,7 @@ export class XtabProvider implements IStatelessNextEditProvider {
 				this.forceUseDefaultModel = true;
 				return yield* this.doGetNextEdit(request, delaySession, tracer, logContext, cancellationToken, telemetryBuilder, opts.retryState); // use the same retry state
 			}
-			return XtabProvider.mapChatFetcherErrorToNoNextEditReason(fetchRes);
+			return mapChatFetcherErrorToNoNextEditReason(fetchRes);
 		}
 
 		fetchResultPromise
@@ -647,7 +749,7 @@ export class XtabProvider implements IStatelessNextEditProvider {
 			})
 			.catch((err: unknown) => {
 				// in principle this shouldn't happen because ChatMLFetcher's fetchOne should not throw
-				logContext.setError(errors.fromUnknown(err));
+				logContext.setError(ErrorUtils.fromUnknown(err));
 				logContext.addLog(`ChatMLFetcher fetch call threw -- this's UNEXPECTED!`);
 			}).finally(() => {
 				logContext.setFetchEndTime();
@@ -661,41 +763,66 @@ export class XtabProvider implements IStatelessNextEditProvider {
 				logContext.setResponse(responseSoFar);
 			});
 
-		const llmLinesStream = toLines(fetchStreamSource.stream);
+		const llmLinesStream = AsyncIterUtilsExt.splitLines(AsyncIterUtils.map(fetchStreamSource.stream, (chunk) => chunk.delta.text));
 
 		// logging of times
 		// removal of cursor tag if option is set
-		const linesStream = (() => {
+		const linesStream: AsyncIterable<string> = (async function* () {
 			let i = 0;
-			return llmLinesStream.map((v) => {
-
+			for await (const v of llmLinesStream) {
 				const trace = `Line ${i++} emitted with latency ${fetchRequestStopWatch.elapsed()} ms`;
 				tracer.trace(trace);
 
-				return opts.shouldRemoveCursorTagFromResponse
+				yield opts.shouldRemoveCursorTagFromResponse
 					? v.replaceAll(PromptTags.CURSOR, '')
 					: v;
-			});
+			}
 		})();
 
 		const isFromCursorJump = opts.retryState instanceof RetryState.Retrying && opts.retryState.reason === 'cursorJump';
 
-		let cleanedLinesStream: AsyncIterableObject<string>;
+		let cleanedLinesStream: AsyncIterable<string>;
 
 		if (opts.responseFormat === xtabPromptOptions.ResponseFormat.EditWindowOnly) {
 			cleanedLinesStream = linesStream;
+		} else if (opts.responseFormat === xtabPromptOptions.ResponseFormat.EditWindowWithEditIntent ||
+			opts.responseFormat === xtabPromptOptions.ResponseFormat.EditWindowWithEditIntentShort) {
+			// Determine parse mode based on response format
+			const parseMode = opts.responseFormat === xtabPromptOptions.ResponseFormat.EditWindowWithEditIntentShort
+				? EditIntentParseMode.ShortName
+				: EditIntentParseMode.Tags;
+
+			// Parse the edit_intent from the response
+			const { editIntent, remainingLinesStream, parseError } = await parseEditIntentFromStream(linesStream, tracer, parseMode);
+
+			// Log the edit intent for telemetry
+			telemetryBuilder.setEditIntent(editIntent);
+
+			// Log parse errors for telemetry - this helps detect malformed model output during flights
+			if (parseError) {
+				telemetryBuilder.setEditIntentParseError(parseError);
+			}
+
+			// Check if we should show this edit based on intent and aggressiveness
+			if (!xtabPromptOptions.EditIntent.shouldShowEdit(editIntent, promptPieces.aggressivenessLevel)) {
+				tracer.trace(`Filtered out edit due to edit intent "${editIntent}" with aggressiveness "${promptPieces.aggressivenessLevel}"`);
+				return new NoNextEditReason.FilteredOut(`editIntent:${editIntent} aggressivenessLevel:${promptPieces.aggressivenessLevel}`);
+			}
+
+			cleanedLinesStream = remainingLinesStream;
 		} else if (opts.responseFormat === xtabPromptOptions.ResponseFormat.CustomDiffPatch) {
 			return yield* XtabCustomDiffPatchResponseHandler.handleResponse(
 				linesStream,
 				request.documentBeforeEdits,
 				editWindow,
+				originalEditWindow,
 			);
 		} else if (opts.responseFormat === xtabPromptOptions.ResponseFormat.UnifiedWithXml) {
 			const linesIter = linesStream[Symbol.asyncIterator]();
 			const firstLine = await linesIter.next();
 
 			if (chatResponseFailure !== undefined) { // handle fetch failure
-				return new NoNextEditReason.Unexpected(errors.fromUnknown(chatResponseFailure));
+				return new NoNextEditReason.Unexpected(ErrorUtils.fromUnknown(chatResponseFailure));
 			}
 
 			if (firstLine.done) { // no lines in response -- unexpected case but take as no suggestions
@@ -717,7 +844,7 @@ export class XtabProvider implements IStatelessNextEditProvider {
 					new LineRange(editWindowLineRange.start + cursorOriginalLinesOffset + 1 /* 0-based to 1-based */, editWindowLineRange.start + cursorOriginalLinesOffset + 2),
 					[editWindowLines[cursorOriginalLinesOffset].slice(0, cursorLineOffset - 1) + lineWithCursorContinued.value + editWindowLines[cursorOriginalLinesOffset].slice(cursorLineOffset - 1)]
 				);
-				yield { edit, isFromCursorJump, window: editWindow };
+				yield { edit, isFromCursorJump, window: editWindow, originalWindow: originalEditWindow };
 
 				const lines: string[] = [];
 				let v = await linesIter.next();
@@ -737,23 +864,24 @@ export class XtabProvider implements IStatelessNextEditProvider {
 						lines
 					),
 					isFromCursorJump,
-					window: editWindow
+					window: editWindow,
+					originalWindow: originalEditWindow
 				};
 
 				return new NoNextEditReason.NoSuggestions(request.documentBeforeEdits, editWindow);
 			}
 
 			if (trimmedLines === ResponseTags.EDIT.start) {
-				cleanedLinesStream = new AsyncIterableObject(async (emitter) => {
+				cleanedLinesStream = (async function* () {
 					let v = await linesIter.next();
 					while (!v.done) {
 						if (v.value.includes(ResponseTags.EDIT.end)) {
 							return;
 						}
-						emitter.emitOne(v.value);
+						yield v.value;
 						v = await linesIter.next();
 					}
-				});
+				})();
 			} else {
 				return new NoNextEditReason.Unexpected(new Error(`unexpected tag ${trimmedLines}`));
 			}
@@ -829,13 +957,13 @@ export class XtabProvider implements IStatelessNextEditProvider {
 						}
 					}
 
-					yield { edit: singleLineEdit, isFromCursorJump, window: editWindow };
+					yield { edit: singleLineEdit, isFromCursorJump, window: editWindow, originalWindow: originalEditWindow };
 					i++;
 				}
 			}
 
 			if (chatResponseFailure) {
-				return XtabProvider.mapChatFetcherErrorToNoNextEditReason(chatResponseFailure);
+				return mapChatFetcherErrorToNoNextEditReason(chatResponseFailure);
 			}
 
 			return new NoNextEditReason.NoSuggestions(request.documentBeforeEdits, editWindow);
@@ -843,7 +971,7 @@ export class XtabProvider implements IStatelessNextEditProvider {
 		} catch (err) {
 			logContext.setError(err);
 			// Properly handle the error by pushing it as a result
-			return new NoNextEditReason.Unexpected(errors.fromUnknown(err));
+			return new NoNextEditReason.Unexpected(ErrorUtils.fromUnknown(err));
 		}
 	}
 
@@ -867,10 +995,20 @@ export class XtabProvider implements IStatelessNextEditProvider {
 			return noSuggestions;
 		}
 
+		if (hasUserTypedSinceRequestStarted(request)) {
+			tracer.trace('Skipping cursor prediction: user typed during request');
+			return new NoNextEditReason.GotCancelled('beforeNextCursorPredictionFetchUserTyped');
+		}
+
 		const nextCursorLineR = await this.nextCursorPredictor.predictNextCursorPosition(promptPieces, tracer, telemetryBuilder, cancellationToken);
 
 		if (cancellationToken.isCancellationRequested) {
 			return new NoNextEditReason.GotCancelled('afterNextCursorPredictionFetch');
+		}
+
+		if (hasUserTypedSinceRequestStarted(request)) {
+			tracer.trace('Skipping cursor prediction: user typed during prediction fetch');
+			return new NoNextEditReason.GotCancelled('afterNextCursorPredictionFetchUserTyped');
 		}
 
 		if (nextCursorLineR.isError()) {
@@ -917,6 +1055,7 @@ export class XtabProvider implements IStatelessNextEditProvider {
 					cancellationToken,
 					telemetryBuilder,
 					new RetryState.Retrying('cursorJump'),
+					editWindow, // Pass the original edit window (before cursor jump) so the cache can serve the edit from both locations
 				);
 				return yield* v;
 			}
@@ -924,14 +1063,6 @@ export class XtabProvider implements IStatelessNextEditProvider {
 				assertNever(nextCursorLinePrediction);
 			}
 		}
-	}
-
-	private computeAreaAroundEditWindowLinesRange(currentDocument: CurrentDocument): OffsetRange {
-		const cursorLine = currentDocument.cursorLineOffset;
-		const areaAroundStart = Math.max(0, cursorLine - N_LINES_AS_CONTEXT);
-		const areaAroundEndExcl = Math.min(currentDocument.lines.length, cursorLine + N_LINES_AS_CONTEXT + 1);
-
-		return new OffsetRange(areaAroundStart, areaAroundEndExcl);
 	}
 
 	private computeEditWindowLinesRange(currentDocument: CurrentDocument, request: StatelessNextEditRequest, tracer: ILogger, telemetry: StatelessNextEditTelemetryBuilder): OffsetRange {
@@ -1001,30 +1132,6 @@ export class XtabProvider implements IStatelessNextEditProvider {
 		return new OffsetRange(codeToEditStart, codeToEditEndExcl);
 	}
 
-	private static mapChatFetcherErrorToNoNextEditReason(fetchError: ChatFetchError): NoNextEditReason {
-		switch (fetchError.type) {
-			case ChatFetchResponseType.Canceled:
-				return new NoNextEditReason.GotCancelled('afterFetchCall');
-			case ChatFetchResponseType.OffTopic:
-			case ChatFetchResponseType.Filtered:
-			case ChatFetchResponseType.PromptFiltered:
-			case ChatFetchResponseType.Length:
-			case ChatFetchResponseType.RateLimited:
-			case ChatFetchResponseType.QuotaExceeded:
-			case ChatFetchResponseType.ExtensionBlocked:
-			case ChatFetchResponseType.AgentUnauthorized:
-			case ChatFetchResponseType.AgentFailedDependency:
-			case ChatFetchResponseType.InvalidStatefulMarker:
-				return new NoNextEditReason.Uncategorized(errors.fromUnknown(fetchError));
-			case ChatFetchResponseType.BadRequest:
-			case ChatFetchResponseType.NotFound:
-			case ChatFetchResponseType.Failed:
-			case ChatFetchResponseType.NetworkError:
-			case ChatFetchResponseType.Unknown:
-				return new NoNextEditReason.FetchFailure(errors.fromUnknown(fetchError));
-		}
-	}
-
 	private determineModelConfiguration(activeDocument: StatelessNextEditDocument): ModelConfig {
 		if (this.forceUseDefaultModel) {
 			const defaultOptions = {
@@ -1032,7 +1139,7 @@ export class XtabProvider implements IStatelessNextEditProvider {
 				...xtabPromptOptions.DEFAULT_OPTIONS,
 			};
 			const defaultModelConfig = this.modelService.defaultModelConfiguration();
-			return XtabProvider.overrideModelConfig(defaultOptions, defaultModelConfig);
+			return overrideModelConfig(defaultOptions, defaultModelConfig);
 		}
 
 		const sourcedModelConfig: ModelConfig = {
@@ -1053,8 +1160,9 @@ export class XtabProvider implements IStatelessNextEditProvider {
 				maxTokens: this.configService.getExperimentBasedConfig(ConfigKey.TeamInternal.InlineEditsXtabRecentlyViewedDocumentsMaxTokens, this.expService),
 				includeViewedFiles: this.configService.getExperimentBasedConfig(ConfigKey.TeamInternal.InlineEditsXtabIncludeViewedFiles, this.expService),
 				includeLineNumbers: this.configService.getExperimentBasedConfig(ConfigKey.TeamInternal.InlineEditsXtabRecentlyViewedIncludeLineNumbers, this.expService),
+				clippingStrategy: this.configService.getExperimentBasedConfig(ConfigKey.TeamInternal.InlineEditsXtabRecentlyViewedClippingStrategy, this.expService),
 			},
-			languageContext: this.determineLanguageContextOptions(activeDocument.languageId, {
+			languageContext: determineLanguageContextOptions(activeDocument.languageId, {
 				enabled: this.configService.getExperimentBasedConfig(ConfigKey.TeamInternal.InlineEditsXtabLanguageContextEnabled, this.expService),
 				enabledLanguages: this.configService.getConfig(ConfigKey.TeamInternal.InlineEditsXtabLanguageContextEnabledLanguages),
 				enableAllContextProviders: this.configService.getExperimentBasedConfig<boolean>(ConfigKey.Advanced.DiagnosticsContextProvider, this.expService)
@@ -1077,54 +1185,7 @@ export class XtabProvider implements IStatelessNextEditProvider {
 		const modelConfig: xtabPromptOptions.ModelConfiguration = selectedModelConfig.promptingStrategy === xtabPromptOptions.PromptingStrategy.CopilotNesXtab
 			? { ...selectedModelConfig, includeTagsInCurrentFile: true }
 			: selectedModelConfig;
-		return XtabProvider.overrideModelConfig(sourcedModelConfig, modelConfig);
-	}
-
-	private static overrideModelConfig(modelConfig: ModelConfig, overridingConfig: xtabPromptOptions.ModelConfiguration): ModelConfig {
-		return {
-			...modelConfig,
-			modelName: overridingConfig.modelName,
-			promptingStrategy: overridingConfig.promptingStrategy,
-			currentFile: {
-				...modelConfig.currentFile,
-				includeTags: overridingConfig.includeTagsInCurrentFile,
-			},
-			lintOptions: overridingConfig.lintOptions ? { ...modelConfig.lintOptions, ...overridingConfig.lintOptions } : modelConfig.lintOptions,
-		};
-	}
-
-	private pickSystemPrompt(promptingStrategy: xtabPromptOptions.PromptingStrategy | undefined): string {
-		switch (promptingStrategy) {
-			case xtabPromptOptions.PromptingStrategy.UnifiedModel:
-				return unifiedModelSystemPrompt;
-			case xtabPromptOptions.PromptingStrategy.Codexv21NesUnified:
-			case xtabPromptOptions.PromptingStrategy.SimplifiedSystemPrompt:
-				return simplifiedPrompt;
-			case xtabPromptOptions.PromptingStrategy.PatchBased:
-			case xtabPromptOptions.PromptingStrategy.PatchBased01:
-			case xtabPromptOptions.PromptingStrategy.Xtab275:
-			case xtabPromptOptions.PromptingStrategy.XtabAggressiveness:
-				return xtab275SystemPrompt;
-			case xtabPromptOptions.PromptingStrategy.Nes41Miniv3:
-				return nes41Miniv3SystemPrompt;
-			case xtabPromptOptions.PromptingStrategy.CopilotNesXtab:
-			case undefined:
-				return systemPromptTemplate;
-			default:
-				assertNever(promptingStrategy);
-		}
-	}
-
-	private determineLanguageContextOptions(languageId: LanguageId, { enabled, enabledLanguages, maxTokens, enableAllContextProviders, traitPosition }: { enabled: boolean; enabledLanguages: LanguageContextLanguages; maxTokens: number; enableAllContextProviders: boolean; traitPosition: 'before' | 'after' }): LanguageContextOptions {
-		if (languageId in enabledLanguages) {
-			return { enabled: enabledLanguages[languageId], maxTokens, traitPosition };
-		}
-
-		if (enableAllContextProviders) {
-			return { enabled: true, maxTokens, traitPosition };
-		}
-
-		return { enabled, maxTokens, traitPosition };
+		return overrideModelConfig(sourcedModelConfig, modelConfig);
 	}
 
 	private getEndpoint(configuredModelName: string | undefined): ChatEndpoint {
@@ -1140,28 +1201,12 @@ export class XtabProvider implements IStatelessNextEditProvider {
 	}
 
 	private getPredictedOutput(doc: StatelessNextEditDocument, editWindowLines: string[], responseFormat: xtabPromptOptions.ResponseFormat): Prediction | undefined {
-		return this.configService.getConfig(ConfigKey.TeamInternal.InlineEditsXtabProviderUsePrediction)
+		return this.configService.getExperimentBasedConfig(ConfigKey.TeamInternal.InlineEditsXtabProviderUsePrediction, this.expService)
 			? {
 				type: 'content',
-				content: this.getPredictionContents(doc, editWindowLines, responseFormat)
+				content: getPredictionContents(doc, editWindowLines, responseFormat)
 			}
 			: undefined;
-	}
-
-	private getPredictionContents(doc: StatelessNextEditDocument, editWindowLines: readonly string[], responseFormat: xtabPromptOptions.ResponseFormat): string {
-		if (responseFormat === xtabPromptOptions.ResponseFormat.UnifiedWithXml) {
-			return ['<EDIT>', ...editWindowLines, '</EDIT>'].join('\n');
-		} else if (responseFormat === xtabPromptOptions.ResponseFormat.EditWindowOnly) {
-			return editWindowLines.join('\n');
-		} else if (responseFormat === xtabPromptOptions.ResponseFormat.CodeBlock) {
-			return ['```', ...editWindowLines, '```'].join('\n');
-		} else if (responseFormat === xtabPromptOptions.ResponseFormat.CustomDiffPatch) {
-			const workspacePath = doc.workspaceRoot?.path;
-			const workspaceRelativeDocPath = toUniquePath(doc.id, workspacePath);
-			return `${workspaceRelativeDocPath}:`;
-		} else {
-			assertNever(responseFormat);
-		}
 	}
 
 	private async debounce(delaySession: DelaySession, retryState: RetryState.t, logger: ILogger, telemetry: StatelessNextEditTelemetryBuilder) {
@@ -1225,10 +1270,329 @@ export class XtabProvider implements IStatelessNextEditProvider {
 			filters.push((edits) => filter(activeDoc, new LineEdit(edits)) ? [] : edits);
 		}
 
+		const substringsToFilterOut = this.configService.getExperimentBasedConfig(ConfigKey.TeamInternal.InlineEditsFilterOutEditsWithSubstrings, this.expService);
+		if (substringsToFilterOut) {
+			const substrings = substringsToFilterOut
+				.split(',')
+				.map(s => s.trim())
+				.filter(s => s.length > 0);
+			filters.push((edits) => filterOutEditsWithSubstrings(edits, substrings));
+		}
+
 		return filters.reduce((acc, filter) => filter(acc), edits);
 	}
 
+}
 
+export function filterOutEditsWithSubstrings(edits: readonly LineReplacement[], substringsToFilterOut: string[]): readonly LineReplacement[] {
+	return edits.filter(edit => {
+		return edit.newLines.every(line => substringsToFilterOut.every(substring => !line.includes(substring)));
+	});
+}
+
+export function computeAreaAroundEditWindowLinesRange(currentDocument: CurrentDocument): OffsetRange {
+	const cursorLine = currentDocument.cursorLineOffset;
+	const areaAroundStart = Math.max(0, cursorLine - N_LINES_AS_CONTEXT);
+	const areaAroundEndExcl = Math.min(currentDocument.lines.length, cursorLine + N_LINES_AS_CONTEXT + 1);
+
+	return new OffsetRange(areaAroundStart, areaAroundEndExcl);
+}
+
+export function mapChatFetcherErrorToNoNextEditReason(fetchError: ChatFetchError): NoNextEditReason {
+	switch (fetchError.type) {
+		case ChatFetchResponseType.Canceled:
+			return new NoNextEditReason.GotCancelled('afterFetchCall');
+		case ChatFetchResponseType.OffTopic:
+		case ChatFetchResponseType.Filtered:
+		case ChatFetchResponseType.PromptFiltered:
+		case ChatFetchResponseType.Length:
+		case ChatFetchResponseType.RateLimited:
+		case ChatFetchResponseType.QuotaExceeded:
+		case ChatFetchResponseType.ExtensionBlocked:
+		case ChatFetchResponseType.AgentUnauthorized:
+		case ChatFetchResponseType.AgentFailedDependency:
+		case ChatFetchResponseType.InvalidStatefulMarker:
+			return new NoNextEditReason.Uncategorized(ErrorUtils.fromUnknown(fetchError));
+		case ChatFetchResponseType.BadRequest:
+		case ChatFetchResponseType.NotFound:
+		case ChatFetchResponseType.Failed:
+		case ChatFetchResponseType.NetworkError:
+		case ChatFetchResponseType.Unknown:
+			return new NoNextEditReason.FetchFailure(ErrorUtils.fromUnknown(fetchError));
+	}
+}
+
+export function overrideModelConfig(modelConfig: ModelConfig, overridingConfig: xtabPromptOptions.ModelConfiguration): ModelConfig {
+	return {
+		...modelConfig,
+		modelName: overridingConfig.modelName,
+		promptingStrategy: overridingConfig.promptingStrategy,
+		includePostScript: overridingConfig.includePostScript ?? modelConfig.includePostScript,
+		currentFile: {
+			...modelConfig.currentFile,
+			...overridingConfig.currentFile,
+			includeTags: overridingConfig.includeTagsInCurrentFile,
+		},
+		recentlyViewedDocuments: { ...modelConfig.recentlyViewedDocuments, ...overridingConfig.recentlyViewedDocuments },
+		lintOptions: overridingConfig.lintOptions ? { ...modelConfig.lintOptions, ...overridingConfig.lintOptions } : modelConfig.lintOptions,
+	};
+}
+
+export function pickSystemPrompt(promptingStrategy: xtabPromptOptions.PromptingStrategy | undefined): string {
+	switch (promptingStrategy) {
+		case xtabPromptOptions.PromptingStrategy.UnifiedModel:
+			return unifiedModelSystemPrompt;
+		case xtabPromptOptions.PromptingStrategy.Codexv21NesUnified:
+		case xtabPromptOptions.PromptingStrategy.SimplifiedSystemPrompt:
+			return simplifiedPrompt;
+		case xtabPromptOptions.PromptingStrategy.PatchBased:
+		case xtabPromptOptions.PromptingStrategy.PatchBased01:
+		case xtabPromptOptions.PromptingStrategy.PatchBased02:
+		case xtabPromptOptions.PromptingStrategy.Xtab275:
+		case xtabPromptOptions.PromptingStrategy.XtabAggressiveness:
+		case xtabPromptOptions.PromptingStrategy.Xtab275Aggressiveness:
+		case xtabPromptOptions.PromptingStrategy.Xtab275EditIntent:
+		case xtabPromptOptions.PromptingStrategy.Xtab275EditIntentShort:
+			return xtab275SystemPrompt;
+		case xtabPromptOptions.PromptingStrategy.Nes41Miniv3:
+			return nes41Miniv3SystemPrompt;
+		case xtabPromptOptions.PromptingStrategy.CopilotNesXtab:
+		case undefined:
+			return systemPromptTemplate;
+		default:
+			assertNever(promptingStrategy);
+	}
+}
+
+export function determineLanguageContextOptions(languageId: LanguageId, { enabled, enabledLanguages, maxTokens, enableAllContextProviders, traitPosition }: { enabled: boolean; enabledLanguages: LanguageContextLanguages; maxTokens: number; enableAllContextProviders: boolean; traitPosition: 'before' | 'after' }): LanguageContextOptions {
+	if (languageId in enabledLanguages) {
+		return { enabled: enabledLanguages[languageId], maxTokens, traitPosition };
+	}
+
+	if (enableAllContextProviders) {
+		return { enabled: true, maxTokens, traitPosition };
+	}
+
+	return { enabled, maxTokens, traitPosition };
+}
+
+export function getPredictionContents(doc: StatelessNextEditDocument, editWindowLines: readonly string[], responseFormat: xtabPromptOptions.ResponseFormat): string {
+	if (responseFormat === xtabPromptOptions.ResponseFormat.UnifiedWithXml) {
+		return ['<EDIT>', ...editWindowLines, '</EDIT>'].join('\n');
+	} else if (responseFormat === xtabPromptOptions.ResponseFormat.EditWindowOnly) {
+		return editWindowLines.join('\n');
+	} else if (responseFormat === xtabPromptOptions.ResponseFormat.EditWindowWithEditIntent) {
+		// For EditWindowWithIntent, we predict the edit intent as high (most likely case) followed by the code
+		return ['<|edit_intent|>high<|/edit_intent|>', ...editWindowLines].join('\n');
+	} else if (responseFormat === xtabPromptOptions.ResponseFormat.EditWindowWithEditIntentShort) {
+		// For EditWindowWithIntentShort, we predict 'H' (high) followed by the code
+		return ['H', ...editWindowLines].join('\n');
+	} else if (responseFormat === xtabPromptOptions.ResponseFormat.CodeBlock) {
+		return ['```', ...editWindowLines, '```'].join('\n');
+	} else if (responseFormat === xtabPromptOptions.ResponseFormat.CustomDiffPatch) {
+		const workspacePath = doc.workspaceRoot?.path;
+		const workspaceRelativeDocPath = toUniquePath(doc.id, workspacePath);
+		return `${workspaceRelativeDocPath}:`;
+	} else {
+		assertNever(responseFormat);
+	}
+}
+
+export interface ParseEditIntentResult {
+	editIntent: xtabPromptOptions.EditIntent;
+	remainingLinesStream: AsyncIterable<string>;
+	parseError?: string;
+}
+
+/**
+ * Mode for parsing edit intent from the model response.
+ */
+export enum EditIntentParseMode {
+	/** Parse using XML-style tags: <|edit_intent|>value<|/edit_intent|> */
+	Tags = 'tags',
+	/** Parse using short names on the first line: N|L|M|H */
+	ShortName = 'shortName',
+}
+
+/**
+ * Parses the edit_intent from the first line of the response stream.
+ * The edit_intent MUST be on the first line, otherwise it's treated as not provided.
+ * Returns the parsed EditIntent and a new stream with the remaining content.
+ *
+ * Supports two modes:
+ * - Tags (default): <|edit_intent|>low|medium|high|no_edit<|/edit_intent|>
+ * - ShortName: N|L|M|H on the first line
+ *
+ * @param linesStream The stream of lines from the model response
+ * @param tracer Logger for tracing
+ * @param mode The parse mode (Tags or ShortName), defaults to Tags
+ */
+export async function parseEditIntentFromStream(
+	linesStream: AsyncIterable<string>,
+	tracer: ILogger,
+	mode: EditIntentParseMode = EditIntentParseMode.Tags,
+): Promise<ParseEditIntentResult> {
+	if (mode === EditIntentParseMode.ShortName) {
+		return parseEditIntentFromStreamShortName(linesStream, tracer);
+	}
+
+	return parseEditIntentFromStreamTags(linesStream, tracer);
+}
+
+/**
+ * Parses the edit_intent using short name format (N|L|M|H on first line).
+ */
+async function parseEditIntentFromStreamShortName(
+	linesStream: AsyncIterable<string>,
+	tracer: ILogger,
+): Promise<ParseEditIntentResult> {
+	let editIntent: xtabPromptOptions.EditIntent = xtabPromptOptions.EditIntent.High; // Default to high (always show) if no short name found
+	let parseError: string | undefined;
+
+	const linesIter = linesStream[Symbol.asyncIterator]();
+	const firstLineResult = await linesIter.next();
+
+	if (firstLineResult.done) {
+		// Empty stream
+		parseError = 'emptyResponse';
+		tracer.warn(`Empty response stream, no edit_intent short name found`);
+		const remainingLinesStream: AsyncIterable<string> = (async function* () { })();
+		return { editIntent, remainingLinesStream, parseError };
+	}
+
+	const firstLine = firstLineResult.value.trim();
+
+	// Check if the first line is a single character short name
+	const parsedIntent = xtabPromptOptions.EditIntent.fromShortName(firstLine);
+
+	if (parsedIntent !== undefined) {
+		editIntent = parsedIntent;
+		tracer.trace(`Parsed edit_intent short name from first line: "${firstLine}" -> ${editIntent}`);
+
+		// Create a new stream with the remaining lines (excluding the short name line)
+		const remainingLinesStream: AsyncIterable<string> = (async function* () {
+			let next = await linesIter.next();
+			while (!next.done) {
+				yield next.value;
+				next = await linesIter.next();
+			}
+		})();
+
+		return { editIntent, remainingLinesStream, parseError };
+	}
+
+	// Short name not found or invalid
+	parseError = `unknownIntentValue:${firstLine}`;
+
+	tracer.warn(`Edit intent parse error: ${parseError} (using Xtab275EditIntentShort prompting strategy). ` +
+		`Defaulting to High (always show). First line was: "${firstLine.substring(0, 100)}..."`);
+
+	// Return the first line plus the rest of the stream
+	const remainingLinesStream: AsyncIterable<string> = (async function* () {
+		yield firstLineResult.value; // Use original value, not trimmed
+		let next = await linesIter.next();
+		while (!next.done) {
+			yield next.value;
+			next = await linesIter.next();
+		}
+	})();
+
+	return { editIntent, remainingLinesStream, parseError };
+}
+
+/**
+ * Parses the edit_intent tag from the first line of the response stream (original tag-based format).
+ */
+async function parseEditIntentFromStreamTags(
+	linesStream: AsyncIterable<string>,
+	tracer: ILogger,
+): Promise<ParseEditIntentResult> {
+	const EDIT_INTENT_START_TAG = '<|edit_intent|>';
+	const EDIT_INTENT_END_TAG = '<|/edit_intent|>';
+
+	let editIntent: xtabPromptOptions.EditIntent = xtabPromptOptions.EditIntent.High; // Default to high (always show) if no tag found
+	let parseError: string | undefined;
+
+	const linesIter = linesStream[Symbol.asyncIterator]();
+	const firstLineResult = await linesIter.next();
+
+	if (firstLineResult.done) {
+		// Empty stream
+		parseError = 'emptyResponse';
+		tracer.warn(`Empty response stream, no edit_intent tag found`);
+		const remainingLinesStream: AsyncIterable<string> = (async function* () { })();
+		return { editIntent, remainingLinesStream, parseError };
+	}
+
+	const firstLine = firstLineResult.value;
+
+	// Check if the first line contains the complete edit_intent tag
+	const startIdx = firstLine.indexOf(EDIT_INTENT_START_TAG);
+	const endIdx = firstLine.indexOf(EDIT_INTENT_END_TAG);
+
+	if (startIdx !== -1 && endIdx !== -1 && endIdx > startIdx) {
+		// Found complete tag on first line
+		const intentValue = firstLine.substring(
+			startIdx + EDIT_INTENT_START_TAG.length,
+			endIdx
+		).trim().toLowerCase();
+
+		// Check if it's a known intent value
+		const knownIntentValues = ['no_edit', 'low', 'medium', 'high'];
+		if (!knownIntentValues.includes(intentValue)) {
+			parseError = `unknownIntentValue:${intentValue}`;
+			tracer.warn(`Unknown edit_intent value: "${intentValue}", defaulting to High`);
+		}
+
+		editIntent = xtabPromptOptions.EditIntent.fromString(intentValue);
+		tracer.trace(`Parsed edit_intent from first line: "${intentValue}" -> ${editIntent}`);
+
+		// Calculate remaining content after the end tag on the first line
+		const afterEndTag = firstLine.substring(endIdx + EDIT_INTENT_END_TAG.length);
+
+		// Create a new stream that first yields remaining content from first line, then continues
+		const remainingLinesStream: AsyncIterable<string> = (async function* () {
+			// Only yield remaining content from first line if non-empty
+			if (afterEndTag.trim() !== '') {
+				yield afterEndTag;
+			}
+			// Continue with rest of the stream
+			let next = await linesIter.next();
+			while (!next.done) {
+				yield next.value;
+				next = await linesIter.next();
+			}
+		})();
+
+		return { editIntent, remainingLinesStream, parseError };
+	}
+
+	// Determine the parse error type
+	if (startIdx !== -1 && endIdx === -1) {
+		// Start tag found but no end tag - malformed (possibly split across lines)
+		parseError = 'malformedTag:startWithoutEnd';
+	} else if (startIdx === -1 && endIdx !== -1) {
+		// End tag found but no start tag - malformed
+		parseError = 'malformedTag:endWithoutStart';
+	} else {
+		// No tag found at all
+		parseError = 'noTagFound';
+	}
+
+	tracer.warn(`Edit intent parse error: ${parseError} (using Xtab275EditIntent prompting strategy). ` +
+		`Defaulting to High (always show). First line was: "${firstLine.substring(0, 100)}..."`);
+
+	// Return the first line plus the rest of the stream
+	const remainingLinesStream: AsyncIterable<string> = (async function* () {
+		yield firstLine;
+		let next = await linesIter.next();
+		while (!next.done) {
+			yield next.value;
+			next = await linesIter.next();
+		}
+	})();
+
+	return { editIntent, remainingLinesStream, parseError };
 }
 
 /**
