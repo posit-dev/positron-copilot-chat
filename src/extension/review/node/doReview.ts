@@ -298,7 +298,7 @@ export function getReviewTitle(group: ReviewGroup, editor?: TextEditor): string 
 	return l10n.t('Reviewing unstaged changes in {0}...', path.posix.basename(group.file.path));
 }
 
-function combineCancellationTokens(token1: CancellationToken, token2: CancellationToken): CancellationToken {
+export function combineCancellationTokens(token1: CancellationToken, token2: CancellationToken): CancellationToken {
 	const combinedSource = new CancellationTokenSource();
 
 	const subscription1 = token1.onCancellationRequested(() => {
